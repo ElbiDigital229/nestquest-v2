@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nestquest-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "env": {
+        "DATABASE_URL": "postgresql://localhost:5432/nestquest_v2"
+      }
+    }
+  ]
+}
