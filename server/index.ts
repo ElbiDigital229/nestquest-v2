@@ -15,8 +15,12 @@ import planRoutes from "./routes/plans";
 import subscriptionRoutes from "./routes/subscriptions";
 import webhookRoutes from "./routes/webhooks";
 import stPropertyRoutes from "./routes/st-properties";
+import publicRoutes from "./routes/public";
+import bookingRoutes from "./routes/bookings";
+import pmSettingsRoutes from "./routes/pm-settings";
 import { checkAllDocumentExpiry } from "./utils/document-expiry-cron";
 import { runBillingCron } from "./utils/billing-cron";
+import { expireStaleBookings } from "./utils/booking-expiry-cron";
 import { requireBillingCurrent } from "./middleware/billing-guard";
 
 const __filename2 = fileURLToPath(import.meta.url);
@@ -80,6 +84,9 @@ app.use("/api/admin/plans", planRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/st-properties", stPropertyRoutes);
+app.use("/api/public", publicRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/pm-settings", pmSettingsRoutes);
 
 // ── Start ──────────────────────────────────────────────
 
@@ -98,6 +105,12 @@ app.listen(PORT, "0.0.0.0", () => {
   setInterval(() => {
     runBillingCron().catch(err => console.error("[Billing Cron] Error:", err));
   }, 60 * 60 * 1000);
+
+  // Run booking expiry check on startup and every 15 minutes
+  expireStaleBookings().catch(err => console.error("[Booking Expiry Cron] Error:", err));
+  setInterval(() => {
+    expireStaleBookings().catch(err => console.error("[Booking Expiry Cron] Error:", err));
+  }, 15 * 60 * 1000);
 });
 
 export default app;

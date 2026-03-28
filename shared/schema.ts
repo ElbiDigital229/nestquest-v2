@@ -147,6 +147,8 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "LINK_INVITE", "LINK_ACCEPTED", "LINK_REJECTED", "LINK_REMOVED",
   "NEW_MESSAGE", "USER_SIGNUP", "KYC_SUBMISSION", "PLAN_ASSIGNED",
   "INVOICE_CREATED", "INVOICE_OVERDUE",
+  "BOOKING_REQUESTED", "BOOKING_CONFIRMED", "BOOKING_DECLINED", "BOOKING_CANCELLED",
+  "BOOKING_CHECKIN", "BOOKING_CHECKOUT", "BOOKING_EXPIRED", "REVIEW_RECEIVED",
 ]);
 
 export const notifications = pgTable("notifications", {
@@ -329,6 +331,37 @@ export const stUaeCityEnum = pgEnum("st_uae_city", ["dubai", "abu_dhabi", "sharj
 export const stBankAccountBelongsToEnum = pgEnum("st_bank_account_belongs_to", ["property_manager", "property_owner"]);
 export const stInternetProviderEnum = pgEnum("st_internet_provider", ["du", "etisalat", "other"]);
 export const stBankLenderEnum = pgEnum("st_bank_lender", ["enbd", "adcb", "dib", "mashreq", "fab", "rak_bank", "other"]);
+export const stExpenseCategoryEnum = pgEnum("st_expense_category", [
+  "maintenance", "renovation", "furnishing", "insurance", "service_charge",
+  "utility", "management_fee", "legal", "government_fee", "commission", "other",
+  "booking_income", "cleaning_fee_income", "security_deposit_received",
+  "security_deposit_returned", "damage_charge", "pm_commission", "po_payout",
+]);
+export const stActivityActionEnum = pgEnum("st_activity_action", [
+  "property_created", "property_updated", "property_activated", "property_deactivated",
+  "status_changed", "photo_added", "photo_removed", "document_added", "document_removed",
+  "expense_added", "expense_updated", "expense_deleted",
+  "owner_assigned", "owner_removed", "agreement_confirmed",
+  "acquisition_updated", "amenities_updated", "policies_updated",
+  "pricing_updated", "description_updated", "details_updated",
+  "booking_created", "booking_confirmed", "booking_declined", "booking_cancelled",
+  "booking_checked_in", "booking_checked_out", "booking_completed", "booking_expired",
+  "review_received", "deposit_returned", "deposit_deducted",
+  "date_blocked", "date_unblocked", "payout_recorded",
+]);
+
+// ── Booking Enums ────────────────────────────────────
+
+export const stBookingStatusEnum = pgEnum("st_booking_status", [
+  "requested", "confirmed", "declined", "cancelled", "checked_in",
+  "checked_out", "completed", "expired", "no_show",
+]);
+export const stBookingPaymentMethodEnum = pgEnum("st_booking_payment_method", ["card", "bank_transfer", "cash"]);
+export const stBookingPaymentStatusEnum = pgEnum("st_booking_payment_status", ["pending", "paid", "partial", "refunded"]);
+export const stBookingSourceEnum = pgEnum("st_booking_source", ["website", "airbnb", "booking_com", "walk_in", "other"]);
+export const stSecurityDepositStatusEnum = pgEnum("st_security_deposit_status", ["pending", "received", "partially_returned", "returned", "forfeited"]);
+export const stTransactionTypeEnum = pgEnum("st_transaction_type", ["income", "expense", "deposit", "refund", "commission", "payout"]);
+export const stOwnerPayoutStatusEnum = pgEnum("st_owner_payout_status", ["pending", "paid"]);
 
 // ── Areas ─────────────────────────────────────────────
 
@@ -560,6 +593,263 @@ export const stPaymentSchedules = pgTable("st_payment_schedules", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// ── ST Property Activity Log ─────────────────────────
+
+export const stPropertyActivityLog = pgTable("st_property_activity_log", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  action: stActivityActionEnum("action").notNull(),
+  description: text("description").notNull(),
+  metadata: text("metadata"), // JSON string for extra context (old/new values, amounts, etc.)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── ST Property Expenses ─────────────────────────────
+
+export const stPropertyExpenses = pgTable("st_property_expenses", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  category: stExpenseCategoryEnum("category").notNull(),
+  description: text("description"),
+  amount: text("amount").notNull(),
+  expenseDate: date("expense_date").notNull(),
+  receiptUrl: text("receipt_url"),
+  createdByUserId: varchar("created_by_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── ST Bookings ─────────────────────────────────────
+
+export const stBookings = pgTable("st_bookings", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  guestUserId: varchar("guest_user_id", { length: 36 })
+    .references(() => users.id),
+  pmUserId: varchar("pm_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  source: stBookingSourceEnum("source").default("website"),
+  status: stBookingStatusEnum("status").default("requested"),
+
+  // Dates & guests
+  checkInDate: date("check_in_date").notNull(),
+  checkOutDate: date("check_out_date").notNull(),
+  numberOfGuests: integer("number_of_guests").notNull(),
+  totalNights: integer("total_nights").notNull(),
+  weekdayNights: integer("weekday_nights"),
+  weekendNights: integer("weekend_nights"),
+
+  // Pricing snapshot (frozen at booking time)
+  nightlyRate: text("nightly_rate"),
+  weekendRate: text("weekend_rate"),
+  cleaningFee: text("cleaning_fee"),
+  tourismTax: text("tourism_tax"),
+  vat: text("vat"),
+  subtotal: text("subtotal").notNull(),
+  totalAmount: text("total_amount").notNull(),
+  securityDepositAmount: text("security_deposit_amount"),
+
+  // Payment
+  paymentMethod: stBookingPaymentMethodEnum("payment_method"),
+  paymentStatus: stBookingPaymentStatusEnum("payment_status").default("pending"),
+  cancellationPolicy: stCancellationPolicyEnum("cancellation_policy"),
+
+  // PM-PO financial snapshots
+  commissionType: stCommissionTypeEnum("commission_type"),
+  commissionValue: text("commission_value"),
+  commissionAmount: text("commission_amount"),
+  bankAccountBelongsTo: stBankAccountBelongsToEnum("bank_account_belongs_to"),
+  ownerPayoutAmount: text("owner_payout_amount"),
+  ownerPayoutStatus: stOwnerPayoutStatusEnum("owner_payout_status").default("pending"),
+  ownerPayoutDate: timestamp("owner_payout_date"),
+
+  // Guest details
+  specialRequests: text("special_requests"),
+  pmNotes: text("pm_notes"),
+
+  // Lifecycle timestamps
+  expiresAt: timestamp("expires_at"),
+  confirmedAt: timestamp("confirmed_at"),
+  declinedAt: timestamp("declined_at"),
+  declineReason: text("decline_reason"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by", { length: 36 })
+    .references(() => users.id),
+  cancellationReason: text("cancellation_reason"),
+  refundAmount: text("refund_amount"),
+
+  // Check-in
+  checkedInAt: timestamp("checked_in_at"),
+  checkedInBy: varchar("checked_in_by", { length: 36 })
+    .references(() => users.id),
+  checkInNotes: text("check_in_notes"),
+  accessPin: text("access_pin"),
+
+  // Check-out
+  checkedOutAt: timestamp("checked_out_at"),
+  checkedOutBy: varchar("checked_out_by", { length: 36 })
+    .references(() => users.id),
+  checkOutNotes: text("check_out_notes"),
+  completedAt: timestamp("completed_at"),
+
+  // Manual/external bookings
+  externalBookingRef: text("external_booking_ref"),
+  guestName: text("guest_name"),
+  guestEmail: text("guest_email"),
+  guestPhone: text("guest_phone"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── ST Booking Transactions ─────────────────────────
+
+export const stBookingTransactions = pgTable("st_booking_transactions", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  bookingId: varchar("booking_id", { length: 36 })
+    .notNull()
+    .references(() => stBookings.id, { onDelete: "cascade" }),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  transactionType: stTransactionTypeEnum("transaction_type").notNull(),
+  category: text("category").notNull(),
+  amount: text("amount").notNull(),
+  direction: text("direction").notNull(), // "in" or "out"
+  heldBy: text("held_by").notNull(), // "pm" or "po"
+  owedTo: text("owed_to"), // "pm", "po", "guest", or null
+  description: text("description"),
+  recordedAt: timestamp("recorded_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── ST Blocked Dates ────────────────────────────────
+
+export const stBlockedDates = pgTable("st_blocked_dates", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date").notNull(),
+  reason: text("reason"),
+  blockedBy: varchar("blocked_by", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── ST Security Deposits ────────────────────────────
+
+export const stSecurityDeposits = pgTable("st_security_deposits", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  bookingId: varchar("booking_id", { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => stBookings.id, { onDelete: "cascade" }),
+  amount: text("amount").notNull(),
+  status: stSecurityDepositStatusEnum("status").default("pending"),
+  receivedAt: timestamp("received_at"),
+  returnedAmount: text("returned_amount"),
+  returnedAt: timestamp("returned_at"),
+  deductions: text("deductions"), // JSON: [{reason: string, amount: string}]
+  processedBy: varchar("processed_by", { length: 36 })
+    .references(() => users.id),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── ST Checkout Records ─────────────────────────────
+
+export const stCheckoutRecords = pgTable("st_checkout_records", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  bookingId: varchar("booking_id", { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => stBookings.id, { onDelete: "cascade" }),
+  checklistItems: text("checklist_items"), // JSON: [{item: string, checked: boolean}]
+  photos: text("photos"), // JSON array of URLs
+  damageAssessment: text("damage_assessment"), // JSON: {hasDamage, description, estimatedCost}
+  notes: text("notes"),
+  completedBy: varchar("completed_by", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ── ST Reviews ──────────────────────────────────────
+
+export const stReviews = pgTable("st_reviews", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  bookingId: varchar("booking_id", { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => stBookings.id, { onDelete: "cascade" }),
+  propertyId: varchar("property_id", { length: 36 })
+    .notNull()
+    .references(() => stProperties.id, { onDelete: "cascade" }),
+  guestUserId: varchar("guest_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id),
+  rating: integer("rating").notNull(),
+  title: text("title"),
+  description: text("description"),
+  pmResponse: text("pm_response"),
+  pmRespondedAt: timestamp("pm_responded_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// ── PM Settings ─────────────────────────────────────
+
+export const pmSettings = pgTable("pm_settings", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  pmUserId: varchar("pm_user_id", { length: 36 })
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  tourismTaxPercent: text("tourism_tax_percent").default("0"),
+  vatPercent: text("vat_percent").default("0"),
+  defaultCheckInTime: text("default_check_in_time").default("15:00"),
+  defaultCheckOutTime: text("default_check_out_time").default("12:00"),
+  defaultCancellationPolicy: stCancellationPolicyEnum("default_cancellation_policy"),
+  businessName: text("business_name"),
+  businessLicense: text("business_license"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // ── Zod Schemas ────────────────────────────────────────
 
 export const insertUserSchema = createInsertSchema(users);
@@ -640,3 +930,22 @@ export type StPropertyPolicy = typeof stPropertyPolicies.$inferSelect;
 export type StPropertyDocument = typeof stPropertyDocuments.$inferSelect;
 export type StAcquisitionDetail = typeof stAcquisitionDetails.$inferSelect;
 export type StPaymentSchedule = typeof stPaymentSchedules.$inferSelect;
+export type StPropertyExpense = typeof stPropertyExpenses.$inferSelect;
+export type StPropertyActivity = typeof stPropertyActivityLog.$inferSelect;
+export type InsertStPropertyExpense = typeof stPropertyExpenses.$inferInsert;
+
+// Booking types
+export type StBooking = typeof stBookings.$inferSelect;
+export type InsertStBooking = typeof stBookings.$inferInsert;
+export type StBookingTransaction = typeof stBookingTransactions.$inferSelect;
+export type InsertStBookingTransaction = typeof stBookingTransactions.$inferInsert;
+export type StBlockedDate = typeof stBlockedDates.$inferSelect;
+export type InsertStBlockedDate = typeof stBlockedDates.$inferInsert;
+export type StSecurityDeposit = typeof stSecurityDeposits.$inferSelect;
+export type InsertStSecurityDeposit = typeof stSecurityDeposits.$inferInsert;
+export type StCheckoutRecord = typeof stCheckoutRecords.$inferSelect;
+export type InsertStCheckoutRecord = typeof stCheckoutRecords.$inferInsert;
+export type StReview = typeof stReviews.$inferSelect;
+export type InsertStReview = typeof stReviews.$inferInsert;
+export type PmSetting = typeof pmSettings.$inferSelect;
+export type InsertPmSetting = typeof pmSettings.$inferInsert;

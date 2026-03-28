@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { users, guests, userAuditLog, pmPoLinks, messages, subscriptions, plans, invoices, documentTypes, userDocuments } from "../../shared/schema";
+import { users, guests, userAuditLog, pmPoLinks, messages, subscriptions, plans, invoices, documentTypes, userDocuments, stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas } from "../../shared/schema";
 import { eq, and, like, or, sql, gte, lte, asc, desc, ne } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
@@ -13,7 +13,7 @@ router.use(requireAuth, requireRole("SUPER_ADMIN"));
 
 // ── List Guests ────────────────────────────────────────
 
-router.get("/guests", async (req: Request, res: Response) => {
+router.get("/users", async (req: Request, res: Response) => {
   try {
     const {
       search,
@@ -110,7 +110,7 @@ router.get("/guests", async (req: Request, res: Response) => {
 
 // ── Get Guest Detail ───────────────────────────────────
 
-router.get("/guests/:id", async (req: Request, res: Response) => {
+router.get("/users/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -152,7 +152,7 @@ router.get("/guests/:id", async (req: Request, res: Response) => {
 
 // ── Update Guest Profile (Admin) ──────────────────────
 
-router.patch("/guests/:id/profile", async (req: Request, res: Response) => {
+router.patch("/users/:id/profile", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { fullName, dob, nationality, countryOfResidence, residentAddress, emiratesIdNumber, emiratesIdExpiry, phone, emiratesIdFrontUrl, emiratesIdBackUrl } = req.body;
@@ -215,7 +215,7 @@ router.patch("/guests/:id/profile", async (req: Request, res: Response) => {
 
 // ── Get Guest Activity ─────────────────────────────────
 
-router.get("/guests/:id/activity", async (req: Request, res: Response) => {
+router.get("/users/:id/activity", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
@@ -240,7 +240,7 @@ router.get("/guests/:id/activity", async (req: Request, res: Response) => {
 
 // ── Update Guest Status ────────────────────────────────
 
-router.patch("/guests/:id/status", async (req: Request, res: Response) => {
+router.patch("/users/:id/status", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -273,7 +273,7 @@ router.patch("/guests/:id/status", async (req: Request, res: Response) => {
 
 // ── Update KYC Status ──────────────────────────────────
 
-router.patch("/guests/:id/kyc", async (req: Request, res: Response) => {
+router.patch("/users/:id/kyc", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { kycStatus } = req.body;
@@ -356,7 +356,7 @@ router.get("/dashboard", async (req: Request, res: Response) => {
 
 // ── Conversations for a user (SA reads messages) ────────
 
-router.get("/guests/:id/conversations", async (req: Request, res: Response) => {
+router.get("/users/:id/conversations", async (req: Request, res: Response) => {
   try {
     const guestId = req.params.id;
 
@@ -536,7 +536,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
 
 // ── PM's subscription (SA view) ─────────────────────────
 
-router.get("/guests/:id/subscription", async (req: Request, res: Response) => {
+router.get("/users/:id/subscription", async (req: Request, res: Response) => {
   try {
     const guestId = req.params.id;
     const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
@@ -579,7 +579,7 @@ router.get("/guests/:id/subscription", async (req: Request, res: Response) => {
   }
 });
 
-router.patch("/guests/:id/subscription", async (req: Request, res: Response) => {
+router.patch("/users/:id/subscription", async (req: Request, res: Response) => {
   try {
     const guestId = req.params.id;
     const { planId } = req.body;
@@ -665,7 +665,7 @@ router.patch("/guests/:id/subscription", async (req: Request, res: Response) => 
 
 // ── Cancel PM's subscription (SA action) ─────────────
 
-router.post("/guests/:id/subscription/cancel", async (req: Request, res: Response) => {
+router.post("/users/:id/subscription/cancel", async (req: Request, res: Response) => {
   try {
     const guestId = req.params.id;
     const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
@@ -776,6 +776,142 @@ router.get("/transactions", async (req: Request, res: Response) => {
       total: (countRows.rows[0] as any).total,
       page: parseInt(page as string),
       limit: lim,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /guests/:id/st-properties — List ST properties for a user (PM or PO) ──
+
+router.get("/users/:id/st-properties", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Look up guest to get userId and role
+    const [guest] = await db
+      .select({ userId: guests.userId })
+      .from(guests)
+      .where(eq(guests.id, id))
+      .limit(1);
+
+    if (!guest) {
+      return res.status(404).json({ error: "Guest not found" });
+    }
+
+    const userId = guest.userId;
+
+    // Get the user's role
+    const [user] = await db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    let whereClause: any;
+    if (user.role === "PROPERTY_MANAGER") {
+      whereClause = sql`p.pm_user_id = ${userId}`;
+    } else if (user.role === "PROPERTY_OWNER") {
+      whereClause = sql`p.po_user_id = ${userId}`;
+    } else {
+      return res.json([]);
+    }
+
+    const results = await db.execute(sql`
+      SELECT
+        p.id,
+        p.public_name AS "publicName",
+        p.status,
+        p.property_type AS "propertyType",
+        p.city,
+        a.name AS "area",
+        p.bedrooms,
+        p.bathrooms,
+        p.nightly_rate AS "nightlyRate",
+        p.po_user_id AS "poUserId",
+        p.pm_user_id AS "pmUserId",
+        ph.url AS "coverPhotoUrl",
+        COALESCE(photo_counts.cnt, 0)::int AS "photosCount",
+        p.created_at AS "createdAt",
+        p.updated_at AS "updatedAt"
+      FROM st_properties p
+      LEFT JOIN areas a ON a.id = p.area_id
+      LEFT JOIN st_property_photos ph ON ph.property_id = p.id AND ph.is_cover = true
+      LEFT JOIN (
+        SELECT property_id, COUNT(*)::int AS cnt FROM st_property_photos GROUP BY property_id
+      ) photo_counts ON photo_counts.property_id = p.id
+      WHERE ${whereClause}
+      ORDER BY p.updated_at DESC
+    `);
+
+    return res.json(results.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /st-properties/:id — View a single ST property (SA read-only) ──
+
+router.get("/st-properties/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const [property] = await db
+      .select()
+      .from(stProperties)
+      .where(eq(stProperties.id, id))
+      .limit(1);
+
+    if (!property) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+
+    // Get area name
+    let areaName: string | null = null;
+    if (property.areaId) {
+      const [area] = await db.select({ name: areas.name }).from(areas).where(eq(areas.id, property.areaId)).limit(1);
+      areaName = area?.name || null;
+    }
+
+    // Fetch related data in parallel
+    const [photos, amenities, policies, documents, acquisitionRows, paymentSchedules] = await Promise.all([
+      db.select().from(stPropertyPhotos).where(eq(stPropertyPhotos.propertyId, id)).orderBy(stPropertyPhotos.displayOrder),
+      db.select().from(stPropertyAmenities).where(eq(stPropertyAmenities.propertyId, id)),
+      db.select().from(stPropertyPolicies).where(eq(stPropertyPolicies.propertyId, id)).orderBy(stPropertyPolicies.displayOrder),
+      db.select().from(stPropertyDocuments).where(eq(stPropertyDocuments.propertyId, id)),
+      db.select().from(stAcquisitionDetails).where(eq(stAcquisitionDetails.propertyId, id)).limit(1),
+      db.select().from(stPaymentSchedules).where(eq(stPaymentSchedules.propertyId, id)).orderBy(stPaymentSchedules.displayOrder),
+    ]);
+
+    // Get PM and PO names
+    let pmName: string | null = null;
+    let poName: string | null = null;
+    if (property.pmUserId) {
+      const [pm] = await db.select({ fullName: guests.fullName, email: users.email }).from(users).innerJoin(guests, eq(guests.userId, users.id)).where(eq(users.id, property.pmUserId)).limit(1);
+      pmName = pm?.fullName || pm?.email || null;
+    }
+    if (property.poUserId) {
+      const [po] = await db.select({ fullName: guests.fullName, email: users.email }).from(users).innerJoin(guests, eq(guests.userId, users.id)).where(eq(users.id, property.poUserId)).limit(1);
+      poName = po?.fullName || po?.email || null;
+    }
+
+    return res.json({
+      ...property,
+      areaName,
+      pmName,
+      poName,
+      photosCount: photos.length,
+      agreementConfirmed: property.confirmed,
+      photos,
+      amenities: amenities.map(a => a.amenityKey),
+      policies,
+      documents,
+      acquisitionDetails: acquisitionRows[0] || null,
+      paymentSchedules,
     });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });

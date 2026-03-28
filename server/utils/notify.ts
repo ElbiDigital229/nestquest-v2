@@ -3,7 +3,7 @@ import { notifications } from "../../shared/schema";
 
 export async function createNotification(params: {
   userId: string;
-  type: "LINK_INVITE" | "LINK_ACCEPTED" | "LINK_REJECTED" | "LINK_REMOVED" | "NEW_MESSAGE" | "USER_SIGNUP" | "KYC_SUBMISSION" | "PLAN_ASSIGNED" | "INVOICE_CREATED" | "INVOICE_OVERDUE";
+  type: "LINK_INVITE" | "LINK_ACCEPTED" | "LINK_REJECTED" | "LINK_REMOVED" | "NEW_MESSAGE" | "USER_SIGNUP" | "KYC_SUBMISSION" | "PLAN_ASSIGNED" | "INVOICE_CREATED" | "INVOICE_OVERDUE" | "BOOKING_REQUESTED" | "BOOKING_CONFIRMED" | "BOOKING_DECLINED" | "BOOKING_CANCELLED" | "BOOKING_EXPIRED" | "BOOKING_CHECKIN" | "BOOKING_CHECKOUT" | "BOOKING_COMPLETED" | "REVIEW_RECEIVED";
   title: string;
   body?: string;
   linkUrl?: string;

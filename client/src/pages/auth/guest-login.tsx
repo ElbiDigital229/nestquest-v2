@@ -86,9 +86,12 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
     return <Redirect to="/" />;
   }
 
+  // Check for returnTo query param
+  const returnTo = new URLSearchParams(window.location.search).get("returnTo");
+
   // If already authenticated, redirect immediately
   if (user && ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"].includes(user.role)) {
-    return <Redirect to="/portal/settings" />;
+    return <Redirect to={returnTo || "/portal/settings"} />;
   }
 
   // ── Email Login ─────────────────────────────────────────
@@ -105,6 +108,7 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
       await api.post("/auth/login", { email, password, role });
       await refreshUser();
       toast({ title: "Welcome back!" });
+      if (returnTo) { navigate(returnTo); return; }
     } catch (error: any) {
       toast({ title: error.message || "Login failed", variant: "destructive" });
     } finally {
@@ -145,6 +149,7 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
       await api.post("/auth/verify-login-otp", { phone, otp, role });
       await refreshUser();
       toast({ title: "Welcome back!" });
+      if (returnTo) { navigate(returnTo); return; }
     } catch (error: any) {
       toast({ title: error.message || "OTP verification failed", variant: "destructive" });
     } finally {

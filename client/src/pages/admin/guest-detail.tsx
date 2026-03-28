@@ -37,6 +37,7 @@ import {
   Globe,
   CreditCard,
   Building2,
+  Home,
   Shield,
   ArrowLeft,
   Loader2,
@@ -289,6 +290,124 @@ function LinkedUserCard({ lu, onClick }: { lu: LinkedUser; onClick: () => void }
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+// ─── Properties Sub-Tab for PM / PO ─────────────────────────────────────────
+
+const statusColors: Record<string, string> = {
+  draft: "border-yellow-500 text-yellow-700 bg-yellow-50",
+  active: "bg-green-600 text-white",
+  inactive: "bg-gray-200 text-gray-600",
+};
+
+function AdminPropertiesTab({ guestId, userRole, userName }: { guestId: string; userRole: string; userName: string }) {
+  const [, navigateToProperty] = useLocation();
+  const { data: properties = [], isLoading } = useQuery<any[]>({
+    queryKey: ["/admin/users", guestId, "st-properties"],
+    queryFn: () => api.get(`/admin/users/${guestId}/st-properties`),
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Home className="h-5 w-5" />
+          Short-Term Properties
+        </CardTitle>
+        <CardDescription>
+          {userRole === "PROPERTY_MANAGER"
+            ? `Properties managed by ${userName}`
+            : `Properties owned by ${userName}`}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {properties.length === 0 ? (
+          <div className="text-center py-8">
+            <Home className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-muted-foreground">No properties found for this user.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {properties.map((p: any) => {
+              const badge = statusColors[p.status] || statusColors.draft;
+              return (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-4 rounded-lg border p-4 cursor-pointer hover:bg-muted/30 transition-colors"
+                  onClick={() => navigateToProperty(`/admin/st-properties/${p.id}`)}
+                >
+                  {/* Thumbnail */}
+                  <div className="h-16 w-24 rounded-md bg-muted overflow-hidden shrink-0">
+                    {p.coverPhotoUrl ? (
+                      <img
+                        src={p.coverPhotoUrl}
+                        alt={p.publicName || "Property"}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Home className="h-6 w-6 text-muted-foreground/40" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h4 className="font-medium text-sm truncate">
+                        {p.publicName || "Untitled Property"}
+                      </h4>
+                      <Badge className={`text-xs ${badge}`}>
+                        {p.status.charAt(0).toUpperCase() + p.status.slice(1)}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                      {p.propertyType && (
+                        <span className="capitalize">{p.propertyType.replace(/_/g, " ")}</span>
+                      )}
+                      {(p.area || p.city) && (
+                        <span>{[p.area, p.city].filter(Boolean).join(", ")}</span>
+                      )}
+                      {p.bedrooms != null && (
+                        <span>{p.bedrooms} bed{p.bedrooms !== 1 ? "s" : ""}</span>
+                      )}
+                      {p.bathrooms != null && (
+                        <span>{p.bathrooms} bath{p.bathrooms !== 1 ? "s" : ""}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Rate */}
+                  <div className="text-right shrink-0">
+                    {p.nightlyRate ? (
+                      <p className="text-sm font-medium">AED {p.nightlyRate}<span className="text-xs text-muted-foreground">/night</span></p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No rate set</p>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {p.photosCount} photo{p.photosCount !== 1 ? "s" : ""}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main Component ─────────────────────────────────────────────────────────
+
 export default function AdminGuestDetail({ id }: { id: string }) {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -304,14 +423,14 @@ export default function AdminGuestDetail({ id }: { id: string }) {
 
   // Fetch guest detail
   const { data, isLoading: guestLoading } = useQuery<GuestDetailResponse>({
-    queryKey: ["/admin/guests", id],
-    queryFn: () => api.get(`/admin/guests/${id}`),
+    queryKey: ["/admin/users", id],
+    queryFn: () => api.get(`/admin/users/${id}`),
   });
 
   // Fetch activity
   const { data: activityData, isLoading: activityLoading } = useQuery<AuditEntry[]>({
-    queryKey: ["/admin/guests", id, "activity"],
-    queryFn: () => api.get(`/admin/guests/${id}/activity`),
+    queryKey: ["/admin/users", id, "activity"],
+    queryFn: () => api.get(`/admin/users/${id}/activity`),
   });
 
   // Fetch linked users (uses userId, not guestId)
@@ -323,8 +442,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
 
   // Fetch conversations for this user (SA messages tab)
   const { data: conversations = [] } = useQuery<Conversation[]>({
-    queryKey: ["/admin/guests", id, "conversations"],
-    queryFn: () => api.get(`/admin/guests/${id}/conversations`),
+    queryKey: ["/admin/users", id, "conversations"],
+    queryFn: () => api.get(`/admin/users/${id}/conversations`),
   });
 
   // Fetch messages for selected conversation
@@ -340,8 +459,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
 
   // Subscription data (PM only)
   const { data: subData } = useQuery<any>({
-    queryKey: ["/admin/guests", id, "subscription"],
-    queryFn: () => api.get(`/admin/guests/${id}/subscription`),
+    queryKey: ["/admin/users", id, "subscription"],
+    queryFn: () => api.get(`/admin/users/${id}/subscription`),
     enabled: data?.user?.role === "PROPERTY_MANAGER",
   });
 
@@ -352,9 +471,9 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   });
 
   const changePlanMutation = useMutation({
-    mutationFn: (planId: string) => api.patch(`/admin/guests/${id}/subscription`, { planId }),
+    mutationFn: (planId: string) => api.patch(`/admin/users/${id}/subscription`, { planId }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id, "subscription"] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id, "subscription"] });
       setShowChangePlan(false);
       toast({ title: "Subscription updated" });
     },
@@ -364,9 +483,9 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   });
 
   const cancelSubMutation = useMutation({
-    mutationFn: () => api.post(`/admin/guests/${id}/subscription/cancel`),
+    mutationFn: () => api.post(`/admin/users/${id}/subscription/cancel`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id, "subscription"] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id, "subscription"] });
       toast({ title: "Subscription cancelled" });
     },
     onError: (e: any) => {
@@ -377,10 +496,10 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   // Update profile mutation
   const updateProfile = useMutation({
     mutationFn: (profileData: Record<string, string>) =>
-      api.patch(`/admin/guests/${id}/profile`, profileData),
+      api.patch(`/admin/users/${id}/profile`, profileData),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id] });
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id, "activity"] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id, "activity"] });
       setIsEditing(false);
       toast({ title: "Guest profile updated" });
     },
@@ -392,10 +511,10 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   // KYC status mutation
   const updateKyc = useMutation({
     mutationFn: (kycStatus: string) =>
-      api.patch(`/admin/guests/${id}/kyc`, { kycStatus }),
+      api.patch(`/admin/users/${id}/kyc`, { kycStatus }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id] });
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id, "activity"] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id, "activity"] });
       toast({ title: "KYC status updated" });
     },
     onError: (error: any) => {
@@ -406,10 +525,10 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   // Account status mutation
   const updateStatus = useMutation({
     mutationFn: (status: string) =>
-      api.patch(`/admin/guests/${id}/status`, { status }),
+      api.patch(`/admin/users/${id}/status`, { status }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id] });
-      queryClient.invalidateQueries({ queryKey: ["/admin/guests", id, "activity"] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id] });
+      queryClient.invalidateQueries({ queryKey: ["/admin/users", id, "activity"] });
       toast({ title: "Account status updated" });
     },
     onError: (error: any) => {
@@ -545,6 +664,7 @@ export default function AdminGuestDetail({ id }: { id: string }) {
           {user.role !== "GUEST" && <TabsTrigger value="messages">Messages</TabsTrigger>}
           <TabsTrigger value="documents">Documents</TabsTrigger>
           {user.role === "PROPERTY_MANAGER" && <TabsTrigger value="subscription">Subscription</TabsTrigger>}
+          {(user.role === "PROPERTY_MANAGER" || user.role === "PROPERTY_OWNER") && <TabsTrigger value="properties">Properties</TabsTrigger>}
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
 
@@ -1475,6 +1595,13 @@ export default function AdminGuestDetail({ id }: { id: string }) {
                 </CardContent>
               </Card>
             )}
+          </TabsContent>
+        )}
+
+        {/* ─── Properties Tab ─────────────────────────────────────────────── */}
+        {(user.role === "PROPERTY_MANAGER" || user.role === "PROPERTY_OWNER") && (
+          <TabsContent value="properties">
+            <AdminPropertiesTab guestId={id} userRole={user.role} userName={user.fullName || user.email} />
           </TabsContent>
         )}
 

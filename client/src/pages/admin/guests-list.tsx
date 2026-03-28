@@ -110,7 +110,7 @@ export default function AdminGuestsList() {
   });
 
   const { data, isLoading } = useQuery<GuestsResponse>({
-    queryKey: ["/admin/guests", page, search, kycStatus, userStatus, nationality, role, dateFrom, dateTo, sortBy, sortOrder],
+    queryKey: ["/admin/users", page, search, kycStatus, userStatus, nationality, role, dateFrom, dateTo, sortBy, sortOrder],
     queryFn: () => {
       const params = new URLSearchParams({
         page: String(page),
@@ -125,7 +125,7 @@ export default function AdminGuestsList() {
       if (role) params.set("role", role);
       if (dateFrom) params.set("dateFrom", dateFrom);
       if (dateTo) params.set("dateTo", dateTo);
-      return api.get(`/admin/guests?${params.toString()}`);
+      return api.get(`/admin/users?${params.toString()}`);
     },
   });
 

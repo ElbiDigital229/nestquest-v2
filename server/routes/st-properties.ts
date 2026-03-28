@@ -1,8 +1,9 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas } from "../../shared/schema";
+import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas, pmPoLinks, guests, users } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
+import { logPropertyActivity } from "../utils/property-activity";
 
 const router = Router();
 
@@ -148,7 +149,41 @@ router.post("/", async (req: Request, res: Response) => {
       return property;
     });
 
+    await logPropertyActivity(result.id, userId!, "property_created", "Property draft created");
+
     return res.status(201).json({ id: result.id });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PO: GET /po/my-properties — List PO's properties ──
+
+router.get("/po/my-properties", async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+
+    if (userRole !== "PROPERTY_OWNER") {
+      return res.status(403).json({ error: "Only property owners can access this" });
+    }
+
+    const propResult = await db.execute(sql`
+      SELECT p.id, p.public_name AS name, p.city, p.area_id AS "areaId",
+        p.property_type AS "propertyType", p.status, p.acquisition_type AS "acquisitionType",
+        p.pm_user_id AS "pmUserId", p.created_at AS "createdAt",
+        a.purchase_price AS "purchasePrice", a.purchase_date AS "purchaseDate",
+        (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
+        (SELECT name FROM areas WHERE id = p.area_id) AS "areaName",
+        (SELECT full_name FROM guests WHERE user_id = p.pm_user_id LIMIT 1) AS "pmName"
+      FROM st_properties p
+      LEFT JOIN st_acquisition_details a ON a.property_id = p.id
+      WHERE p.po_user_id = ${userId}
+      ORDER BY p.created_at DESC
+    `);
+    const results = propResult.rows || [];
+
+    return res.json(results);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -158,7 +193,8 @@ router.post("/", async (req: Request, res: Response) => {
 
 router.get("/:id", async (req: Request, res: Response) => {
   try {
-    if (!isPM(req)) {
+    const userRole = req.session.userRole;
+    if (userRole !== "PROPERTY_MANAGER" && userRole !== "PROPERTY_OWNER") {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -176,7 +212,11 @@ router.get("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Property not found" });
     }
 
-    if (property.pmUserId !== userId) {
+    // PM must own it, PO must be linked
+    if (userRole === "PROPERTY_MANAGER" && property.pmUserId !== userId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (userRole === "PROPERTY_OWNER" && property.poUserId !== userId) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -276,6 +316,40 @@ router.patch("/:id", async (req: Request, res: Response) => {
     updates.updatedAt = new Date();
 
     await db.update(stProperties).set(updates).where(eq(stProperties.id, id));
+
+    // Log significant changes
+    const changedKeys = Object.keys(updates).filter(k => k !== "updatedAt" && k !== "wizardStep");
+    if (changedKeys.length > 0) {
+      // Determine action type
+      let action = "property_updated";
+      let desc = `Updated: ${changedKeys.join(", ")}`;
+
+      if (updates.status === "active" && existing.status !== "active") {
+        action = "property_activated"; desc = "Property activated";
+      } else if (updates.status === "inactive") {
+        action = "property_deactivated"; desc = "Property deactivated";
+      } else if (updates.status && updates.status !== existing.status) {
+        action = "status_changed"; desc = `Status changed to ${updates.status}`;
+      } else if (updates.confirmed === true) {
+        action = "agreement_confirmed"; desc = "Agreement confirmed";
+      } else if (updates.poUserId && !existing.poUserId) {
+        action = "owner_assigned"; desc = "Property owner assigned";
+      } else if (updates.poUserId === null && existing.poUserId) {
+        action = "owner_removed"; desc = "Property owner removed";
+      } else if (updates.acquisitionType !== undefined) {
+        action = "acquisition_updated"; desc = `Acquisition type set to ${updates.acquisitionType}`;
+      } else if (changedKeys.some(k => ["nightlyRate", "weekendRate", "minimumStay", "cleaningFee", "securityDepositRequired", "securityDepositAmount"].includes(k))) {
+        action = "pricing_updated"; desc = "Pricing updated";
+      } else if (changedKeys.some(k => ["checkInTime", "checkOutTime", "cancellationPolicy"].includes(k))) {
+        action = "policies_updated"; desc = "Policies updated";
+      } else if (changedKeys.some(k => ["publicName", "shortDescription", "longDescription", "internalNotes"].includes(k))) {
+        action = "description_updated"; desc = "Description updated";
+      } else if (changedKeys.some(k => ["propertyType", "bedrooms", "bathrooms", "maxGuests", "areaSqft", "viewType", "unitNumber", "buildingName", "floorNumber"].includes(k))) {
+        action = "details_updated"; desc = "Property details updated";
+      }
+
+      await logPropertyActivity(id, userId!, action, desc, { fields: changedKeys });
+    }
 
     // Return updated property
     const [updated] = await db
@@ -509,6 +583,8 @@ router.post("/:id/photos", async (req: Request, res: Response) => {
       isCover: isFirst,
     }).returning();
 
+    await logPropertyActivity(id, req.session.userId!, "photo_added", "Photo added", { photoId: photo.id });
+
     return res.status(201).json(photo);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -601,6 +677,8 @@ router.delete("/:id/photos/:photoId", async (req: Request, res: Response) => {
           .where(eq(stPropertyPhotos.id, first.id));
       }
     }
+
+    await logPropertyActivity(id, req.session.userId!, "photo_removed", "Photo removed", { photoId });
 
     return res.json({ message: "Photo deleted" });
   } catch (error: any) {
@@ -823,6 +901,7 @@ router.post("/:id/documents", async (req: Request, res: Response) => {
     }).returning();
 
     await db.update(stProperties).set({ updatedAt: new Date() }).where(eq(stProperties.id, id));
+    await logPropertyActivity(id, req.session.userId!, "document_added", `Document added: ${documentType}`, { documentType, docId: doc.id });
 
     return res.status(201).json(doc);
   } catch (error: any) {
@@ -841,7 +920,247 @@ router.delete("/:id/documents/:docId", async (req: Request, res: Response) => {
     await db.delete(stPropertyDocuments)
       .where(and(eq(stPropertyDocuments.id, docId), eq(stPropertyDocuments.propertyId, id)));
 
+    await logPropertyActivity(id, req.session.userId!, "document_removed", "Document removed", { docId });
+
     return res.json({ message: "Document deleted" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /:id/activity — Get activity log for a property ──
+
+router.get("/:id/activity", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+
+    // Verify access
+    const propRes = await db.execute(
+      sql`SELECT pm_user_id AS "pmUserId", po_user_id AS "poUserId" FROM st_properties WHERE id = ${id}`
+    );
+    const prop = (propRes.rows || [])[0] as { pmUserId: string; poUserId: string | null } | undefined;
+    if (!prop) return res.status(404).json({ error: "Property not found" });
+
+    if (userRole === "PROPERTY_MANAGER" && prop.pmUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const result = await db.execute(sql`
+      SELECT a.id, a.action, a.description, a.metadata, a.created_at AS "createdAt",
+        g.full_name AS "userName"
+      FROM st_property_activity_log a
+      LEFT JOIN guests g ON g.user_id = a.user_id
+      WHERE a.property_id = ${id}
+      ORDER BY a.created_at DESC
+      LIMIT 100
+    `);
+
+    return res.json(result.rows || []);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /:id/expenses — List expenses for a property ──
+
+router.get("/:id/expenses", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+
+    // Verify access: PM owns it, or PO is linked
+    const propRes = await db.execute(
+      sql`SELECT pm_user_id AS "pmUserId", po_user_id AS "poUserId" FROM st_properties WHERE id = ${id}`
+    );
+    const prop = (propRes.rows || [])[0] as { pmUserId: string; poUserId: string | null } | undefined;
+    if (!prop) return res.status(404).json({ error: "Property not found" });
+
+    if (userRole === "PROPERTY_MANAGER" && prop.pmUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const expResult = await db.execute(
+      sql`SELECT id, property_id AS "propertyId", category, description, amount,
+          expense_date AS "expenseDate", receipt_url AS "receiptUrl",
+          created_at AS "createdAt", updated_at AS "updatedAt"
+          FROM st_property_expenses WHERE property_id = ${id} ORDER BY expense_date DESC`
+    );
+    const expenses = expResult.rows || [];
+
+    return res.json(expenses);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /:id/investment-summary — Investment summary for a property ──
+
+router.get("/:id/investment-summary", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+
+    const propResult = await db.execute(
+      sql`SELECT pm_user_id AS "pmUserId", po_user_id AS "poUserId" FROM st_properties WHERE id = ${id}`
+    );
+    const prop = (propResult.rows || [])[0] as { pmUserId: string; poUserId: string | null } | undefined;
+    if (!prop) return res.status(404).json({ error: "Property not found" });
+
+    if (userRole === "PROPERTY_MANAGER" && prop.pmUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // Get acquisition details (acquisition_type is on st_properties, not st_acquisition_details)
+    const acqResult = await db.execute(
+      sql`SELECT a.purchase_price AS "purchasePrice", a.purchase_date AS "purchaseDate", p.acquisition_type AS "acquisitionType"
+          FROM st_acquisition_details a
+          JOIN st_properties p ON p.id = a.property_id
+          WHERE a.property_id = ${id} LIMIT 1`
+    );
+    const acquisition = (acqResult.rows || [])[0] as { purchasePrice: string; purchaseDate: string | null; acquisitionType: string | null } | undefined;
+
+    // Get all expenses for this property using raw SQL
+    const expenseResult = await db.execute(
+      sql`SELECT id, category, description, amount, expense_date FROM st_property_expenses WHERE property_id = ${id}`
+    );
+    const allExpenses = (expenseResult.rows || []) as { id: string; category: string; description: string | null; amount: string; expense_date: string }[];
+
+    const totalExpensesNum = allExpenses.reduce((sum, e) => sum + parseFloat(e.amount || "0"), 0);
+    const expenseCount = allExpenses.length;
+
+    // Category breakdown
+    const catMap: Record<string, { total: number; count: number }> = {};
+    for (const e of allExpenses) {
+      if (!catMap[e.category]) catMap[e.category] = { total: 0, count: 0 };
+      catMap[e.category].total += parseFloat(e.amount || "0");
+      catMap[e.category].count += 1;
+    }
+    const categoryBreakdown = Object.entries(catMap)
+      .map(([category, { total, count }]) => ({ category, total: total.toFixed(2), count }))
+      .sort((a, b) => parseFloat(b.total) - parseFloat(a.total));
+
+    const purchasePrice = parseFloat(acquisition?.purchasePrice || "0");
+    const totalExpenses = totalExpensesNum;
+
+    return res.json({
+      purchasePrice: acquisition?.purchasePrice || "0",
+      purchaseDate: acquisition?.purchaseDate || null,
+      acquisitionType: acquisition?.acquisitionType || null,
+      totalExpenses: totalExpenses.toFixed(2),
+      expenseCount,
+      totalInvestment: (purchasePrice + totalExpenses).toFixed(2),
+      categoryBreakdown,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── POST /:id/expenses — Add an expense ──
+
+router.post("/:id/expenses", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+
+    if (!isPM(req)) return res.status(403).json({ error: "Only PMs can add expenses" });
+
+    // Verify PM owns property
+    const [prop] = await db.select({ pmUserId: stProperties.pmUserId })
+      .from(stProperties).where(eq(stProperties.id, id));
+    if (!prop) return res.status(404).json({ error: "Property not found" });
+    if (prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+
+    const { category, description, amount, expenseDate, receiptUrl } = req.body;
+    if (!category || !amount || !expenseDate) {
+      return res.status(400).json({ error: "category, amount, and expenseDate are required" });
+    }
+
+    const expId = crypto.randomUUID();
+    const insertResult = await db.execute(
+      sql`INSERT INTO st_property_expenses (id, property_id, category, description, amount, expense_date, receipt_url, created_by_user_id, created_at, updated_at)
+          VALUES (${expId}, ${id}, ${sql.raw(`'${category}'::st_expense_category`)}, ${description || null}, ${String(amount)}, ${expenseDate}, ${receiptUrl || null}, ${userId}, NOW(), NOW())
+          RETURNING id, property_id AS "propertyId", category, description, amount, expense_date AS "expenseDate", receipt_url AS "receiptUrl", created_at AS "createdAt", updated_at AS "updatedAt"`
+    );
+    const expense = (insertResult.rows || [])[0];
+
+    await logPropertyActivity(id, userId, "expense_added", `Expense added: ${category} — AED ${amount}`, { expenseId: expId, category, amount, description });
+
+    return res.status(201).json(expense);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PATCH /:id/expenses/:expenseId — Update an expense ──
+
+router.patch("/:id/expenses/:expenseId", async (req: Request, res: Response) => {
+  try {
+    const { id, expenseId } = req.params;
+    const userId = req.session.userId!;
+
+    if (!isPM(req)) return res.status(403).json({ error: "Only PMs can edit expenses" });
+
+    const [prop] = await db.select({ pmUserId: stProperties.pmUserId })
+      .from(stProperties).where(eq(stProperties.id, id));
+    if (!prop || prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+
+    const { category, description, amount, expenseDate, receiptUrl } = req.body;
+    const setClauses: string[] = ["updated_at = NOW()"];
+    if (category !== undefined) setClauses.push(`category = '${category}'::st_expense_category`);
+    if (description !== undefined) setClauses.push(`description = ${description === null ? 'NULL' : `'${description.replace(/'/g, "''")}'`}`);
+    if (amount !== undefined) setClauses.push(`amount = '${String(amount)}'`);
+    if (expenseDate !== undefined) setClauses.push(`expense_date = '${expenseDate}'`);
+    if (receiptUrl !== undefined) setClauses.push(`receipt_url = ${receiptUrl === null ? 'NULL' : `'${receiptUrl}'`}`);
+
+    const updateResult = await db.execute(
+      sql.raw(`UPDATE st_property_expenses SET ${setClauses.join(", ")} WHERE id = '${expenseId}' AND property_id = '${id}' RETURNING id, category, description, amount, expense_date AS "expenseDate", receipt_url AS "receiptUrl", updated_at AS "updatedAt"`)
+    );
+    const updated = (updateResult.rows || [])[0];
+
+    if (!updated) return res.status(404).json({ error: "Expense not found" });
+
+    await logPropertyActivity(id, userId, "expense_updated", `Expense updated`, { expenseId, category, amount });
+
+    return res.json(updated);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── DELETE /:id/expenses/:expenseId — Delete an expense ──
+
+router.delete("/:id/expenses/:expenseId", async (req: Request, res: Response) => {
+  try {
+    const { id, expenseId } = req.params;
+    const userId = req.session.userId!;
+
+    if (!isPM(req)) return res.status(403).json({ error: "Only PMs can delete expenses" });
+
+    const [prop] = await db.select({ pmUserId: stProperties.pmUserId })
+      .from(stProperties).where(eq(stProperties.id, id));
+    if (!prop || prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+
+    await db.execute(
+      sql`DELETE FROM st_property_expenses WHERE id = ${expenseId} AND property_id = ${id}`
+    );
+
+    await logPropertyActivity(id, userId, "expense_deleted", "Expense deleted", { expenseId });
+
+    return res.json({ message: "Expense deleted" });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }

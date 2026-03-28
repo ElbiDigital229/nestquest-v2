@@ -106,8 +106,8 @@ export default function AdminLinkedUserDialog({
   onClose: () => void;
 }) {
   const { data, isLoading } = useQuery<AdminGuestResponse>({
-    queryKey: ["/admin/guests", guestId],
-    queryFn: () => api.get(`/admin/guests/${guestId}`),
+    queryKey: ["/admin/users", guestId],
+    queryFn: () => api.get(`/admin/users/${guestId}`),
     enabled: !!guestId && open,
   });
 

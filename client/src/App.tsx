@@ -6,6 +6,7 @@ import GuestLogin from "@/pages/auth/guest-login";
 import AdminLogin from "@/pages/auth/admin-login";
 import PortalSettings from "@/pages/portal/settings";
 import PortalMessages from "@/pages/portal/messages";
+import MyBookings from "@/pages/portal/my-bookings";
 import AdminGuestsList from "@/pages/admin/guests-list";
 import AdminGuestDetail from "@/pages/admin/guest-detail";
 import AdminChat from "@/pages/admin/chat";
@@ -22,8 +23,17 @@ import Checkout from "@/pages/portal/checkout";
 import StProperties from "@/pages/portal/st-properties";
 import StPropertyWizard from "@/pages/portal/st-property-wizard";
 import StPropertyView from "@/pages/portal/st-property-view";
+import AdminStPropertyView from "@/pages/admin/st-property-view";
+import PoProperties from "@/pages/portal/po-properties";
+import PoPropertyView from "@/pages/portal/po-property-view";
 import PortalLayout from "@/components/layout/portal-layout";
 import AdminLayout from "@/components/layout/admin-layout";
+import PublicHome from "@/pages/public/home";
+import PublicSearch from "@/pages/public/search";
+import PublicPropertyDetail from "@/pages/public/property-detail";
+import BookingConfirm from "@/pages/public/booking-confirm";
+import BookingPayment from "@/pages/public/booking-payment";
+import BookingSuccess from "@/pages/public/booking-success";
 
 const PORTAL_ROLES = ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"];
 
@@ -78,6 +88,13 @@ export default function App() {
         <ProtectedRoute roles={PORTAL_ROLES}>
           <PortalLayout fullWidth>
             <PortalMessages />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/my-bookings">
+        <ProtectedRoute roles={PORTAL_ROLES}>
+          <PortalLayout>
+            <MyBookings />
           </PortalLayout>
         </ProtectedRoute>
       </Route>
@@ -141,6 +158,22 @@ export default function App() {
           </PortalLayout>
         </ProtectedRoute>
       </Route>
+      <Route path="/portal/po-properties/:id">
+        {(params) => (
+          <ProtectedRoute roles={["PROPERTY_OWNER"]}>
+            <PortalLayout fullWidth>
+              <PoPropertyView id={params.id} />
+            </PortalLayout>
+          </ProtectedRoute>
+        )}
+      </Route>
+      <Route path="/portal/po-properties">
+        <ProtectedRoute roles={["PROPERTY_OWNER"]}>
+          <PortalLayout>
+            <PoProperties />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
       <Route path="/portal/notifications">
         <ProtectedRoute roles={PORTAL_ROLES}>
           <PortalLayout>
@@ -157,6 +190,15 @@ export default function App() {
       </Route>
 
       {/* Admin routes */}
+      <Route path="/admin/st-properties/:id">
+        {(params) => (
+          <ProtectedRoute roles={["SUPER_ADMIN"]}>
+            <AdminLayout fullWidth>
+              <AdminStPropertyView id={params.id} />
+            </AdminLayout>
+          </ProtectedRoute>
+        )}
+      </Route>
       <Route path="/admin/users/:id">
         {(params) => (
           <ProtectedRoute roles={["SUPER_ADMIN"]}>
@@ -216,8 +258,17 @@ export default function App() {
         </ProtectedRoute>
       </Route>
 
-      {/* Landing — role selection */}
-      <Route path="/" component={RoleSelect} />
+      {/* Public website routes */}
+      <Route path="/search" component={PublicSearch} />
+      <Route path="/property/:id">
+        {(params) => <PublicPropertyDetail />}
+      </Route>
+      <Route path="/booking/confirm" component={BookingConfirm} />
+      <Route path="/booking/payment" component={BookingPayment} />
+      <Route path="/booking/success" component={BookingSuccess} />
+
+      {/* Landing — public homepage */}
+      <Route path="/" component={PublicHome} />
     </Switch>
   );
 }

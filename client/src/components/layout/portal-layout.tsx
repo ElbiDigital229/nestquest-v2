@@ -19,6 +19,7 @@ import {
   Building,
   ChevronDown,
   ChevronRight,
+  CalendarDays,
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
@@ -26,6 +27,7 @@ type NavItem = { label: string; href: string; icon: any };
 
 const baseNavItems: NavItem[] = [
   { label: "Settings", href: "/portal/settings", icon: Settings },
+  { label: "My Bookings", href: "/portal/my-bookings", icon: CalendarDays },
   { label: "Messages", href: "/portal/messages", icon: MessageSquare },
   { label: "Notifications", href: "/portal/notifications", icon: Bell },
 ];
@@ -37,6 +39,7 @@ const roleNavItems: Record<string, NavItem[]> = {
     { label: "Tenants", href: "/portal/tenants", icon: Users },
   ],
   PROPERTY_OWNER: [
+    { label: "My Properties", href: "/portal/po-properties", icon: Home },
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
   TENANT: [
