@@ -1,9 +1,26 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { plans, planFeatures, subscriptions, invoices, paymentMethods, userAuditLog } from "../../shared/schema";
+import { plans, planFeatures, subscriptions, invoices, paymentMethods, userAuditLog, users, guests } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { sanitize } from "../utils/sanitize";
+import { createNotification } from "../utils/notify";
+
+// Helper: notify all super admins
+async function notifySuperAdmins(opts: { type: Parameters<typeof createNotification>[0]["type"]; title: string; body: string; linkUrl?: string; relatedId?: string }) {
+  try {
+    const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "SUPER_ADMIN"));
+    for (const admin of admins) {
+      await createNotification({ userId: admin.id, ...opts });
+    }
+  } catch {}
+}
+
+// Helper: get user display name
+async function getUserName(userId: string): Promise<string> {
+  const [guest] = await db.select({ fullName: guests.fullName }).from(guests).where(eq(guests.userId, userId)).limit(1);
+  return guest?.fullName || "Unknown User";
+}
 
 const router = Router();
 
@@ -217,6 +234,28 @@ router.post("/checkout", async (req: Request, res: Response) => {
       return { subscription: sub, invoice };
     });
 
+    // Notify super admins about new subscription
+    const userName = await getUserName(userId!);
+    const trialLabel = isTrial ? ` (${plan.trialDays}-day trial)` : "";
+    notifySuperAdmins({
+      type: "PLAN_ASSIGNED",
+      title: `New plan subscription: ${userName}`,
+      body: `${userName} subscribed to ${plan.name} plan${trialLabel}`,
+      linkUrl: "/admin/transactions",
+      relatedId: userId!,
+    });
+
+    // Notify super admins about payment (if paid immediately)
+    if (invoiceStatus === "paid" && parseFloat(plan.price) > 0) {
+      notifySuperAdmins({
+        type: "INVOICE_CREATED",
+        title: `Payment received: ${userName}`,
+        body: `${userName} paid AED ${plan.price} for ${plan.name} plan`,
+        linkUrl: "/admin/transactions",
+        relatedId: userId!,
+      });
+    }
+
     return res.status(201).json(result);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -295,6 +334,25 @@ router.post("/activate", async (req: Request, res: Response) => {
         ipAddress: req.ip,
       });
     });
+
+    // Notify super admins about activation + payment
+    const activateName = await getUserName(userId!);
+    notifySuperAdmins({
+      type: "PLAN_ASSIGNED",
+      title: `Plan activated: ${activateName}`,
+      body: `${activateName} activated ${sub.planName} plan (payment completed)`,
+      linkUrl: "/admin/transactions",
+      relatedId: userId!,
+    });
+    if (parseFloat(sub.planPrice) > 0) {
+      notifySuperAdmins({
+        type: "INVOICE_CREATED",
+        title: `Payment received: ${activateName}`,
+        body: `${activateName} paid AED ${sub.planPrice} for ${sub.planName} plan`,
+        linkUrl: "/admin/transactions",
+        relatedId: userId!,
+      });
+    }
 
     return res.json({ message: "Subscription activated", subscriptionId: sub.id });
   } catch (error: any) {
@@ -533,6 +591,16 @@ router.post("/pay-invoice", async (req: Request, res: Response) => {
         metadata: JSON.stringify({ invoiceId: inv.id, planName: inv.planName }),
         ipAddress: req.ip,
       });
+    });
+
+    // Notify super admins about payment
+    const payerName = await getUserName(userId!);
+    notifySuperAdmins({
+      type: "INVOICE_CREATED",
+      title: `Payment received: ${payerName}`,
+      body: `${payerName} paid AED ${inv.amount} for ${inv.planName} plan (overdue invoice)`,
+      linkUrl: "/admin/transactions",
+      relatedId: userId!,
     });
 
     return res.json({ message: "Invoice paid, subscription reactivated" });

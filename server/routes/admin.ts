@@ -462,7 +462,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
     const { role, search } = req.query;
 
     const whereClauses: ReturnType<typeof sql>[] = [];
-    whereClauses.push(sql`u.role != 'SUPER_ADMIN'`);
+    whereClauses.push(sql`u.role NOT IN ('SUPER_ADMIN', 'PM_TEAM_MEMBER')`);
 
     if (role && role !== "all") {
       whereClauses.push(sql`u.role = ${role as string}`);
@@ -476,7 +476,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
       ? sql`WHERE ${sql.join(whereClauses, sql` AND `)}`
       : sql``;
 
-    // Build documents array from the guests table columns (the actual source of truth)
+    // Build documents array using actual document_types IDs for correct matching
     const rows = await db.execute(sql`
       SELECT
         u.id AS "userId",
@@ -486,25 +486,16 @@ router.get("/compliance", async (req: Request, res: Response) => {
         u.role,
         json_build_array(
           json_build_object(
-            'documentTypeId', 'dt-emirates-front',
-            'slug', 'emirates_id_front',
-            'label', 'Emirates ID (Front)',
-            'fileUrl', g.emirates_id_front_url,
+            'documentTypeId', (SELECT id FROM document_types WHERE slug = 'emirates_id' LIMIT 1),
+            'slug', 'emirates_id',
+            'label', 'Emirates ID',
+            'fileUrl', CASE WHEN g.emirates_id_front_url IS NOT NULL OR g.emirates_id_back_url IS NOT NULL THEN COALESCE(g.emirates_id_front_url, g.emirates_id_back_url) ELSE NULL END,
             'documentNumber', g.emirates_id_number,
             'expiryDate', g.emirates_id_expiry,
             'hasExpiry', true
           ),
           json_build_object(
-            'documentTypeId', 'dt-emirates-back',
-            'slug', 'emirates_id_back',
-            'label', 'Emirates ID (Back)',
-            'fileUrl', g.emirates_id_back_url,
-            'documentNumber', g.emirates_id_number,
-            'expiryDate', g.emirates_id_expiry,
-            'hasExpiry', true
-          ),
-          json_build_object(
-            'documentTypeId', 'dt-passport',
+            'documentTypeId', (SELECT id FROM document_types WHERE slug = 'passport' LIMIT 1),
             'slug', 'passport',
             'label', 'Passport',
             'fileUrl', g.passport_front_url,
@@ -513,7 +504,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
             'hasExpiry', true
           ),
           json_build_object(
-            'documentTypeId', 'dt-trade-license',
+            'documentTypeId', (SELECT id FROM document_types WHERE slug = 'trade_license' LIMIT 1),
             'slug', 'trade_license',
             'label', 'Trade License',
             'fileUrl', g.trade_license_url,

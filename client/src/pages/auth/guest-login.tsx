@@ -90,8 +90,9 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
   const returnTo = new URLSearchParams(window.location.search).get("returnTo");
 
   // If already authenticated, redirect immediately
-  if (user && ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"].includes(user.role)) {
-    return <Redirect to={returnTo || "/portal/settings"} />;
+  if (user && ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT", "PM_TEAM_MEMBER", "CLEANER"].includes(user.role)) {
+    const defaultPath = user.role === "CLEANER" ? "/portal/cleaner-tasks" : "/portal/settings";
+    return <Redirect to={returnTo || defaultPath} />;
   }
 
   // ── Email Login ─────────────────────────────────────────
@@ -105,10 +106,12 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
 
     setIsLoading(true);
     try {
-      await api.post("/auth/login", { email, password, role });
+      const loginRes = await api.post<{ user: { role: string } }>("/auth/login", { email, password, role });
       await refreshUser();
       toast({ title: "Welcome back!" });
-      if (returnTo) { navigate(returnTo); return; }
+      const defaultPath = loginRes.user?.role === "CLEANER" ? "/portal/cleaner-tasks" : "/portal/settings";
+      navigate(returnTo || defaultPath);
+      return;
     } catch (error: any) {
       toast({ title: error.message || "Login failed", variant: "destructive" });
     } finally {

@@ -209,7 +209,161 @@ function getActionLabel(action: string): string {
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
+// ── Team Member Settings (simplified) ──────────────────
+
+function TeamMemberSettings() {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+
+  const { data: profile, isLoading } = useQuery<any>({
+    queryKey: ["/team/my-profile"],
+    queryFn: () => api.get("/team/my-profile"),
+  });
+
+  const [form, setForm] = useState({ fullName: "", phone: "" });
+  const [pwForm, setPwForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+
+  const startEdit = () => {
+    setForm({ fullName: profile?.fullName || "", phone: user?.phone || "" });
+    setEditing(true);
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: (data: any) => api.patch("/team/my-profile", data),
+    onSuccess: () => {
+      toast({ title: "Profile updated" });
+      queryClient.invalidateQueries({ queryKey: ["/team/my-profile"] });
+      setEditing(false);
+    },
+    onError: (err: any) => toast({ title: err.message, variant: "destructive" }),
+  });
+
+  const pwMutation = useMutation({
+    mutationFn: (data: any) => api.patch("/team/my-profile", data),
+    onSuccess: () => {
+      toast({ title: "Password changed" });
+      setPwForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    },
+    onError: (err: any) => toast({ title: err.message, variant: "destructive" }),
+  });
+
+  if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>;
+
+  const permissions: string[] = profile?.permissions || [];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">My Profile</h1>
+        <p className="text-muted-foreground mt-1">Team member account settings</p>
+      </div>
+
+      {/* Profile Card */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg">Profile Information</CardTitle>
+            {!editing && <Button variant="outline" size="sm" onClick={startEdit}>Edit</Button>}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {editing ? (
+            <>
+              <div className="space-y-1.5">
+                <Label>Full Name</Label>
+                <Input value={form.fullName} onChange={(e) => setForm(f => ({ ...f, fullName: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Phone</Label>
+                <Input value={form.phone} onChange={(e) => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="+971 50 000 0000" />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={() => saveMutation.mutate(form)} disabled={saveMutation.isPending}>
+                  {saveMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Save
+                </Button>
+                <Button variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+              </div>
+            </>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div><p className="text-muted-foreground">Name</p><p className="font-medium">{profile?.fullName || "—"}</p></div>
+              <div><p className="text-muted-foreground">Email</p><p className="font-medium">{user?.email}</p></div>
+              <div><p className="text-muted-foreground">Phone</p><p className="font-medium">{user?.phone || "—"}</p></div>
+              <div><p className="text-muted-foreground">Manager</p><p className="font-medium">{profile?.pmName || "—"}</p></div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Role & Permissions */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Role & Permissions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">{profile?.roleName || "No Role Assigned"}</Badge>
+          </div>
+          {permissions.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {permissions.map((p: string) => (
+                <Badge key={p} variant="outline" className="text-[10px]">{p.replace(/\./g, " ").replace(/\b\w/g, c => c.toUpperCase())}</Badge>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No permissions assigned. Contact your Property Manager.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Change Password */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg">Change Password</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 max-w-md">
+          <div className="space-y-1.5">
+            <Label>Current Password</Label>
+            <Input type="password" value={pwForm.currentPassword} onChange={(e) => setPwForm(f => ({ ...f, currentPassword: e.target.value }))} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>New Password</Label>
+            <Input type="password" value={pwForm.newPassword} onChange={(e) => setPwForm(f => ({ ...f, newPassword: e.target.value }))} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Confirm New Password</Label>
+            <Input type="password" value={pwForm.confirmPassword} onChange={(e) => setPwForm(f => ({ ...f, confirmPassword: e.target.value }))} />
+          </div>
+          <Button
+            disabled={!pwForm.currentPassword || !pwForm.newPassword || pwForm.newPassword !== pwForm.confirmPassword || pwMutation.isPending}
+            onClick={() => pwMutation.mutate({ currentPassword: pwForm.currentPassword, newPassword: pwForm.newPassword })}
+          >
+            {pwMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Change Password
+          </Button>
+          {pwForm.newPassword && pwForm.confirmPassword && pwForm.newPassword !== pwForm.confirmPassword && (
+            <p className="text-xs text-destructive">Passwords don't match</p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ── Main Settings (KYC users) ──────────────────────────
+
 export default function GuestSettings() {
+  const { user, refreshUser } = useAuth();
+
+  // Team members get simplified settings
+  if (user?.role === "PM_TEAM_MEMBER") return <TeamMemberSettings />;
+
+  return <FullSettings />;
+}
+
+function FullSettings() {
   const [, navigate] = useLocation();
   const { refreshUser } = useAuth();
   const { toast } = useToast();

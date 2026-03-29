@@ -5,6 +5,9 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
 import { logPropertyActivity } from "../utils/property-activity";
 import { recordBookingIncome, recordBookingRefund, recordDepositReturn, recordOwnerPayout } from "../utils/booking-financials";
+import { createBookingSettlements } from "../utils/settlements";
+import { triggerCleaningAutomation } from "./cleaners";
+import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
 
 const router = Router();
 
@@ -58,6 +61,27 @@ function calculateRefund(
       return totalAmount;
   }
 }
+
+// ── GET /api/bookings/payment-details/:propertyId — Bank details for payment (authenticated)
+router.get("/payment-details/:propertyId", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { propertyId } = req.params;
+    const result = await db.execute(sql`
+      SELECT p.bank_name AS "bankName", p.account_holder_name AS "accountHolderName",
+        p.account_number AS "accountNumber", p.iban, p.swift_code AS "swiftCode",
+        p.accepted_payment_methods AS "acceptedPaymentMethods",
+        p.payment_method_config AS "paymentMethodConfig",
+        u.email AS "pmEmail"
+      FROM st_properties p
+      JOIN users u ON u.id = p.pm_user_id
+      WHERE p.id = ${propertyId} AND p.status = 'active'
+    `);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Property not found" });
+    return res.json(result.rows[0]);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 // ══════════════════════════════════════════════════════
 // PUBLIC / GUEST ENDPOINTS
@@ -123,7 +147,7 @@ router.post("/calculate-price", async (req: Request, res: Response) => {
     const subtotal = nightlyTotal + cleaningFee;
     const tourismTax = nightlyTotal * (tourismTaxPct / 100);
     const vat = subtotal * (vatPct / 100);
-    const total = subtotal + tourismTax + vat;
+    const total = subtotal + tourismTax + vat + securityDeposit;
 
     return res.json({
       totalNights,
@@ -138,9 +162,8 @@ router.post("/calculate-price", async (req: Request, res: Response) => {
       tourismTaxPercent: tourismTaxPct,
       vat: vat.toFixed(2),
       vatPercent: vatPct,
-      total: total.toFixed(2),
       securityDeposit: securityDeposit.toFixed(2),
-      grandTotal: (total + securityDeposit).toFixed(2),
+      total: total.toFixed(2),
       minimumStay: prop.minimum_stay || 1,
       cancellationPolicy: prop.cancellation_policy,
     });
@@ -157,9 +180,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     const userId = req.session.userId!;
     const userRole = req.session.userRole!;
 
-    // Any authenticated user except SA can book (PMs use /manual for their own properties)
+    // Only guests, POs, and tenants can book via public flow. PMs/team use /manual.
     if (userRole === "SUPER_ADMIN") {
       return res.status(403).json({ error: "Admins cannot create bookings" });
+    }
+    if (userRole === "PROPERTY_MANAGER") {
+      return res.status(403).json({ error: "Property Managers should use the manual booking feature" });
+    }
+    if (userRole === "PM_TEAM_MEMBER") {
+      return res.status(403).json({ error: "Team members should use the manual booking feature" });
     }
 
     const { propertyId, checkIn, checkOut, guests, paymentMethod, specialRequests } = req.body;
@@ -245,14 +274,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     const tourismTax = nightlyTotal * (parseFloat(tax.tourism_tax_percent || "0") / 100);
     const vat = (nightlyTotal + cleaningFee) * (parseFloat(tax.vat_percent || "0") / 100);
     const subtotal = nightlyTotal + cleaningFee;
-    const total = subtotal + tourismTax + vat;
+    const total = subtotal + tourismTax + vat + securityDeposit;
 
-    // Commission calculation
+    // Commission calculation (based on rental income, not deposit)
+    const rentalIncome = subtotal + tourismTax + vat;
     let commissionAmount = "0";
     if (prop.commission_type === "percentage_per_booking" && prop.commission_value) {
       commissionAmount = (subtotal * (parseFloat(prop.commission_value) / 100)).toFixed(2);
     }
-    const ownerPayoutAmount = (total - parseFloat(commissionAmount)).toFixed(2);
+    const ownerPayoutAmount = (rentalIncome - parseFloat(commissionAmount)).toFixed(2);
 
     // Create booking
     const bookingId = crypto.randomUUID();
@@ -325,16 +355,24 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 });
 
 // ── GET /api/bookings/my ──────────────────────────────
-// List guest's bookings
+// List bookings for current user (guest sees their bookings, PM sees all managed bookings)
 router.get("/my", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
     const status = req.query.status as string;
 
     let statusFilter = sql``;
     if (status && status !== "all") {
       statusFilter = sql` AND b.status = ${sql.raw(`'${status}'::st_booking_status`)}`;
     }
+
+    // PM/team sees all bookings for their properties; others see only their own
+    const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
+    const pmId = isPmOrTeam ? await getPmUserId(req) : userId;
+    const ownerFilter = isPmOrTeam
+      ? sql`(b.guest_user_id = ${userId} OR b.pm_user_id = ${pmId})`
+      : sql`b.guest_user_id = ${userId}`;
 
     const result = await db.execute(sql`
       SELECT b.id, b.status, b.source,
@@ -350,11 +388,13 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
         p.city AS "propertyCity",
         a.name AS "areaName",
         (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
-        (SELECT id FROM st_reviews WHERE booking_id = b.id LIMIT 1) AS "reviewId"
+        (SELECT id FROM st_reviews WHERE booking_id = b.id LIMIT 1) AS "reviewId",
+        g.full_name AS "guestName"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       LEFT JOIN areas a ON a.id = p.area_id
-      WHERE b.guest_user_id = ${userId}
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE ${ownerFilter}
       ${statusFilter}
       ORDER BY b.created_at DESC
     `);
@@ -604,12 +644,17 @@ router.patch("/:id/cancel", requireAuth, async (req: Request, res: Response) => 
 // ══════════════════════════════════════════════════════
 
 // ── GET /api/bookings/property/:propertyId ────────────
-// List bookings for a property (PM or PO)
-router.get("/property/:propertyId", requireAuth, async (req: Request, res: Response) => {
+// List bookings for a property (PM, team member, or PO)
+router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.view"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
     const { propertyId } = req.params;
     const status = req.query.status as string;
+
+    // Resolve PM ID for team members
+    const resolvedId = (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER")
+      ? await getPmUserId(req) : userId;
 
     // Verify access
     const propCheck = await db.execute(sql`
@@ -618,7 +663,7 @@ router.get("/property/:propertyId", requireAuth, async (req: Request, res: Respo
     if (propCheck.rows.length === 0) return res.status(404).json({ error: "Property not found" });
 
     const prop = propCheck.rows[0] as any;
-    if (prop.pm_user_id !== userId && prop.po_user_id !== userId) {
+    if (prop.pm_user_id !== resolvedId && prop.po_user_id !== userId) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -665,15 +710,15 @@ router.get("/property/:propertyId", requireAuth, async (req: Request, res: Respo
 });
 
 // ── GET /api/bookings/property/:propertyId/calendar ───
-router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
   try {
-    const userId = req.session.userId!;
+    const pmId = await getPmUserId(req);
     const { propertyId } = req.params;
     const { from, to } = req.query as Record<string, string>;
 
     // Verify ownership
     const propCheck = await db.execute(sql`
-      SELECT 1 FROM st_properties WHERE id = ${propertyId} AND pm_user_id = ${userId}
+      SELECT 1 FROM st_properties WHERE id = ${propertyId} AND pm_user_id = ${pmId}
     `);
     if (propCheck.rows.length === 0) return res.status(403).json({ error: "Access denied" });
 
@@ -715,15 +760,16 @@ router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER"), as
 });
 
 // ── PATCH /api/bookings/:id/confirm ───────────────────
-router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
+    const pmId = await getPmUserId(req);
 
     const bookingResult = await db.execute(sql`
       SELECT b.*, p.public_name AS property_name
       FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
-      WHERE b.id = ${id} AND b.pm_user_id = ${userId}
+      WHERE b.id = ${id} AND b.pm_user_id = ${pmId}
     `);
 
     if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
@@ -733,9 +779,14 @@ router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER"), async (req: Reques
       return res.status(400).json({ error: `Cannot confirm a booking with status: ${booking.status}` });
     }
 
+    // Track who confirmed / collected cash
+    const cashCollectedBy = booking.payment_method === "cash" ? userId : null;
+
     await db.execute(sql`
       UPDATE st_bookings SET status = 'confirmed', confirmed_at = NOW(),
-        payment_status = 'paid', updated_at = NOW()
+        payment_status = 'paid',
+        cash_collected_by_user_id = ${cashCollectedBy},
+        updated_at = NOW()
       WHERE id = ${id}
     `);
 
@@ -754,6 +805,9 @@ router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER"), async (req: Reques
       bankAccountBelongsTo: booking.bank_account_belongs_to,
     });
 
+    // Create settlement records (PM↔PO reconciliation)
+    createBookingSettlements(id).catch(err => console.error("[Settlements] Error:", err));
+
     // Notify guest
     if (booking.guest_user_id) {
       await createNotification({
@@ -762,6 +816,20 @@ router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER"), async (req: Reques
         title: "Booking confirmed!",
         body: `Your booking at ${booking.property_name || "a property"} has been confirmed.`,
         linkUrl: `/portal/my-bookings/${id}`,
+        relatedId: id,
+      });
+    }
+
+    // Notify PM when team member performs action
+    const userRole = req.session.userRole;
+    if (userRole === "PM_TEAM_MEMBER") {
+      // Notify the parent PM
+      await createNotification({
+        userId: pmId,
+        type: "BOOKING_CONFIRMED",
+        title: "Team member confirmed booking",
+        body: `A team member confirmed a booking at ${booking.property_name || "a property"}.`,
+        linkUrl: `/portal/my-bookings`,
         relatedId: id,
       });
     }
@@ -779,7 +847,7 @@ router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER"), async (req: Reques
 });
 
 // ── PATCH /api/bookings/:id/decline ───────────────────
-router.patch("/:id/decline", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/decline", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
@@ -899,13 +967,14 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
     const tourismTax = nightlyTotal * (parseFloat(tax.tourism_tax_percent || "0") / 100);
     const vat = (nightlyTotal + cleaningFee) * (parseFloat(tax.vat_percent || "0") / 100);
     const subtotal = nightlyTotal + cleaningFee;
-    const total = totalAmountOverride ? parseFloat(totalAmountOverride) : (subtotal + tourismTax + vat);
+    const rentalIncome = subtotal + tourismTax + vat;
+    const total = totalAmountOverride ? parseFloat(totalAmountOverride) : (subtotal + tourismTax + vat + securityDeposit);
 
     let commissionAmount = "0";
     if (prop.commission_type === "percentage_per_booking" && prop.commission_value) {
       commissionAmount = (subtotal * (parseFloat(prop.commission_value) / 100)).toFixed(2);
     }
-    const ownerPayoutAmount = (total - parseFloat(commissionAmount)).toFixed(2);
+    const ownerPayoutAmount = (totalAmountOverride ? (total - parseFloat(commissionAmount)) : (rentalIncome - parseFloat(commissionAmount))).toFixed(2);
 
     const bookingId = crypto.randomUUID();
     const validSource = source || "other";
@@ -959,6 +1028,9 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
       bankAccountBelongsTo: prop.bank_account_belongs_to,
     });
 
+    // Create settlement records
+    createBookingSettlements(bookingId).catch(err => console.error("[Settlements] Error:", err));
+
     await logPropertyActivity(
       propertyId, userId, "booking_created",
       `Manual booking added: ${guestName || "Guest"} (${source || "other"})`,
@@ -973,16 +1045,17 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
 });
 
 // ── PATCH /api/bookings/:id/check-in ──────────────────
-router.patch("/:id/check-in", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/check-in", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
     const { notes } = req.body;
+    const pmId = await getPmUserId(req);
 
     const bookingResult = await db.execute(sql`
       SELECT b.*, p.smart_home, p.public_name AS property_name
       FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
-      WHERE b.id = ${id} AND b.pm_user_id = ${userId}
+      WHERE b.id = ${id} AND b.pm_user_id = ${pmId}
     `);
     if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
 
@@ -1030,7 +1103,7 @@ router.patch("/:id/check-in", requireRole("PROPERTY_MANAGER"), async (req: Reque
 });
 
 // ── PATCH /api/bookings/:id/check-out ─────────────────
-router.patch("/:id/check-out", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/check-out", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
@@ -1084,6 +1157,10 @@ router.patch("/:id/check-out", requireRole("PROPERTY_MANAGER"), async (req: Requ
       `Guest checked out`, { bookingId: id }
     );
 
+    // Trigger cleaning automation rules
+    triggerCleaningAutomation(booking.property_id, booking.pm_user_id, id)
+      .catch(err => console.error("[Cleaning Automation] Error:", err));
+
     return res.json({ status: "checked_out" });
   } catch (error: any) {
     console.error("[Bookings] PATCH check-out error:", error);
@@ -1092,7 +1169,7 @@ router.patch("/:id/check-out", requireRole("PROPERTY_MANAGER"), async (req: Requ
 });
 
 // ── PATCH /api/bookings/:id/complete ──────────────────
-router.patch("/:id/complete", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/complete", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
@@ -1333,7 +1410,7 @@ router.post("/:id/deposit/return", requireRole("PROPERTY_MANAGER"), async (req: 
 
 // ── PATCH /api/bookings/:id/payout ────────────────────
 // Mark owner payout as completed
-router.patch("/:id/payout", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.patch("/:id/payout", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;

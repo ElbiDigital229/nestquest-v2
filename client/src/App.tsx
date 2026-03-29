@@ -5,6 +5,12 @@ import GuestSignup from "@/pages/auth/guest-signup";
 import GuestLogin from "@/pages/auth/guest-login";
 import AdminLogin from "@/pages/auth/admin-login";
 import PortalSettings from "@/pages/portal/settings";
+import PortalDocuments from "@/pages/portal/documents";
+import PortalReports from "@/pages/portal/reports";
+import PortalSettlements from "@/pages/portal/settlements";
+import PortalTeam from "@/pages/portal/team";
+import CleanerOps from "@/pages/portal/cleaner-ops";
+import CleanerTasks from "@/pages/portal/cleaner-tasks";
 import PortalMessages from "@/pages/portal/messages";
 import MyBookings from "@/pages/portal/my-bookings";
 import AdminGuestsList from "@/pages/admin/guests-list";
@@ -35,7 +41,7 @@ import BookingConfirm from "@/pages/public/booking-confirm";
 import BookingPayment from "@/pages/public/booking-payment";
 import BookingSuccess from "@/pages/public/booking-success";
 
-const PORTAL_ROLES = ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"];
+const PORTAL_ROLES = ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT", "PM_TEAM_MEMBER", "CLEANER"];
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles: string[] }) {
   const { user, isLoading } = useAuth();
@@ -57,6 +63,7 @@ export default function App() {
   return (
     <Switch>
       {/* Auth routes */}
+      <Route path="/login" component={RoleSelect} />
       <Route path="/login/:roleSlug">
         {(params) => <GuestLogin roleSlug={params.roleSlug} />}
       </Route>
@@ -99,14 +106,14 @@ export default function App() {
         </ProtectedRoute>
       </Route>
       <Route path="/portal/property-owners">
-        <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <PropertyOwnersPage />
           </PortalLayout>
         </ProtectedRoute>
       </Route>
       <Route path="/portal/tenants">
-        <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <TenantsPage />
           </PortalLayout>
@@ -120,14 +127,14 @@ export default function App() {
         </ProtectedRoute>
       </Route>
       <Route path="/portal/plans">
-        <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <PlanSelection />
           </PortalLayout>
         </ProtectedRoute>
       </Route>
       <Route path="/portal/checkout">
-        <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <Checkout />
           </PortalLayout>
@@ -135,7 +142,7 @@ export default function App() {
       </Route>
       <Route path="/portal/st-properties/:id/edit">
         {(params) => (
-          <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+          <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
             <PortalLayout fullWidth>
               <StPropertyWizard id={params.id} />
             </PortalLayout>
@@ -144,7 +151,7 @@ export default function App() {
       </Route>
       <Route path="/portal/st-properties/:id">
         {(params) => (
-          <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+          <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
             <PortalLayout fullWidth>
               <StPropertyView id={params.id} />
             </PortalLayout>
@@ -152,9 +159,51 @@ export default function App() {
         )}
       </Route>
       <Route path="/portal/st-properties">
-        <ProtectedRoute roles={["PROPERTY_MANAGER"]}>
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <StProperties />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/documents">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PROPERTY_OWNER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <PortalDocuments />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/reports">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <PortalReports />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/settlements">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PROPERTY_OWNER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <PortalSettlements />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/team">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <PortalTeam />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/cleaner-ops">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <CleanerOps />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/cleaner-tasks">
+        <ProtectedRoute roles={["CLEANER"]}>
+          <PortalLayout>
+            <CleanerTasks />
           </PortalLayout>
         </ProtectedRoute>
       </Route>

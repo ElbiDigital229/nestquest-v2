@@ -18,6 +18,8 @@ import stPropertyRoutes from "./routes/st-properties";
 import publicRoutes from "./routes/public";
 import bookingRoutes from "./routes/bookings";
 import pmSettingsRoutes from "./routes/pm-settings";
+import teamRoutes from "./routes/team";
+import cleanerRoutes from "./routes/cleaners";
 import { checkAllDocumentExpiry } from "./utils/document-expiry-cron";
 import { runBillingCron } from "./utils/billing-cron";
 import { expireStaleBookings } from "./utils/booking-expiry-cron";
@@ -87,6 +89,8 @@ app.use("/api/st-properties", stPropertyRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/pm-settings", pmSettingsRoutes);
+app.use("/api/team", teamRoutes);
+app.use("/api/cleaners", cleanerRoutes);
 
 // ── Start ──────────────────────────────────────────────
 

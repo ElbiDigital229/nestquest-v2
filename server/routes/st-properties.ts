@@ -4,15 +4,25 @@ import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { logPropertyActivity } from "../utils/property-activity";
+import { createNotification } from "../utils/notify";
+import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
+
+// Helper: get PM user ID (resolves team member → parent PM)
+async function resolvePmId(req: Request): Promise<string> {
+  const role = req.session.userRole;
+  if (role === "PROPERTY_MANAGER") return req.session.userId!;
+  if (role === "PM_TEAM_MEMBER") return getPmUserId(req);
+  return req.session.userId!;
+}
 
 const router = Router();
 
 // All routes require authentication
 router.use(requireAuth);
 
-// Helper: verify PM role
+// Helper: verify PM or team member role
 function isPM(req: Request): boolean {
-  return req.session.userRole === "PROPERTY_MANAGER";
+  return req.session.userRole === "PROPERTY_MANAGER" || req.session.userRole === "PM_TEAM_MEMBER";
 }
 
 // ── GET /areas — List all areas (for dropdowns and map) ──
@@ -55,13 +65,13 @@ router.get("/areas", async (req: Request, res: Response) => {
 
 // ── GET / — List all ST properties for the logged-in PM ──
 
-router.get("/", async (req: Request, res: Response) => {
+router.get("/", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const userId = req.session.userId;
+    const pmId = await resolvePmId(req);
 
     const results = await db.execute(sql`
       SELECT
@@ -112,7 +122,7 @@ router.get("/", async (req: Request, res: Response) => {
           bool_or(document_type = 'dtcm') AS has_dtcm
         FROM st_property_documents GROUP BY property_id
       ) doc_counts ON doc_counts.property_id = p.id
-      WHERE p.pm_user_id = ${userId}
+      WHERE p.pm_user_id = ${pmId}
       ORDER BY p.updated_at DESC
     `);
 
@@ -124,19 +134,16 @@ router.get("/", async (req: Request, res: Response) => {
 
 // ── POST / — Create a new draft property ──
 
-router.post("/", async (req: Request, res: Response) => {
+router.post("/", requirePmPermission("properties.create"), async (req: Request, res: Response) => {
   try {
-    if (!isPM(req)) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
-    const userId = req.session.userId;
+    const pmId = await resolvePmId(req);
+    const actorId = req.session.userId!;
 
     const result = await db.transaction(async (tx) => {
       const [property] = await tx
         .insert(stProperties)
         .values({
-          pmUserId: userId,
+          pmUserId: pmId,
           status: "draft",
         })
         .returning({ id: stProperties.id });
@@ -149,7 +156,7 @@ router.post("/", async (req: Request, res: Response) => {
       return property;
     });
 
-    await logPropertyActivity(result.id, userId!, "property_created", "Property draft created");
+    await logPropertyActivity(result.id, actorId, "property_created", "Property draft created");
 
     return res.status(201).json({ id: result.id });
   } catch (error: any) {
@@ -189,17 +196,305 @@ router.get("/po/my-properties", async (req: Request, res: Response) => {
   }
 });
 
-// ── GET /:id — Get full property details ──
+// ── GET /reports/earnings — PM earnings across all properties ──
 
-router.get("/:id", async (req: Request, res: Response) => {
+router.get("/reports/earnings", async (req: Request, res: Response) => {
+  try {
+    if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
+    const userId = req.session.userId!;
+
+    // Per-property breakdown
+    const propertyResult = await db.execute(sql`
+      SELECT
+        p.id, p.public_name AS "publicName", p.building_name AS "buildingName", p.unit_number AS "unitNumber",
+        COUNT(b.id)::int AS "bookingCount",
+        COALESCE(SUM(b.subtotal::decimal + b.tourism_tax::decimal + b.vat::decimal), 0) AS "totalIncome",
+        COALESCE(SUM(b.commission_amount::decimal), 0) AS "commission",
+        COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "ownerPayout"
+      FROM st_properties p
+      LEFT JOIN st_bookings b ON b.property_id = p.id
+        AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
+      WHERE p.pm_user_id = ${userId}
+      GROUP BY p.id
+      ORDER BY COALESCE(SUM(b.commission_amount::decimal), 0) DESC
+    `);
+
+    // Totals
+    const totalsResult = await db.execute(sql`
+      SELECT
+        COUNT(b.id)::int AS "totalBookings",
+        COALESCE(SUM(b.subtotal::decimal + b.tourism_tax::decimal + b.vat::decimal), 0) AS "totalBookingIncome",
+        COALESCE(SUM(b.commission_amount::decimal), 0) AS "totalCommission",
+        COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "totalOwnerPayouts"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE p.pm_user_id = ${userId}
+        AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
+    `);
+    const totals = (totalsResult.rows[0] || {}) as any;
+
+    // Recent bookings with commission
+    const recentResult = await db.execute(sql`
+      SELECT
+        b.id, b.status,
+        b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
+        b.total_amount AS "totalAmount", b.commission_amount AS "commission",
+        b.created_at AS "createdAt",
+        p.public_name AS "propertyName",
+        COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE p.pm_user_id = ${userId}
+        AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
+      ORDER BY b.created_at DESC
+      LIMIT 20
+    `);
+
+    return res.json({
+      totalCommission: parseFloat(totals.totalCommission || "0").toFixed(2),
+      totalBookings: totals.totalBookings || 0,
+      totalBookingIncome: parseFloat(totals.totalBookingIncome || "0").toFixed(2),
+      totalOwnerPayouts: parseFloat(totals.totalOwnerPayouts || "0").toFixed(2),
+      properties: propertyResult.rows,
+      recentBookings: recentResult.rows,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /settlements — PM/PO settlement ledger ──
+
+router.get("/settlements", requirePmPermission("financials.view"), async (req: Request, res: Response) => {
+  try {
+    const userRole = req.session.userRole!;
+
+    if (!["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "PROPERTY_OWNER"].includes(userRole!)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // For PM/team, resolve to PM ID; for PO use own ID
+    const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
+    const userId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
+
+    // Get settlements where user is either from or to
+    const result = await db.execute(sql`
+      SELECT
+        s.id, s.booking_id AS "bookingId", s.property_id AS "propertyId",
+        s.from_user_id AS "fromUserId", s.to_user_id AS "toUserId",
+        s.amount, s.reason, s.payment_method_used AS "paymentMethodUsed",
+        s.collected_by AS "collectedBy", s.status, s.notes,
+        s.paid_at AS "paidAt", s.confirmed_at AS "confirmedAt",
+        s.proof_url AS "proofUrl",
+        s.created_at AS "createdAt",
+        p.public_name AS "propertyName", p.building_name AS "buildingName", p.unit_number AS "unitNumber",
+        from_g.full_name AS "fromName",
+        to_g.full_name AS "toName",
+        b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
+        b.total_amount AS "bookingTotal",
+        COALESCE(guest_g.full_name, b.guest_name, 'Guest') AS "guestName"
+      FROM pm_po_settlements s
+      JOIN st_properties p ON p.id = s.property_id
+      JOIN st_bookings b ON b.id = s.booking_id
+      LEFT JOIN guests from_g ON from_g.user_id = s.from_user_id
+      LEFT JOIN guests to_g ON to_g.user_id = s.to_user_id
+      LEFT JOIN guests guest_g ON guest_g.user_id = b.guest_user_id
+      WHERE s.from_user_id = ${userId} OR s.to_user_id = ${userId}
+      ORDER BY s.created_at DESC
+    `);
+
+    // Summary stats
+    const pendingOwed = (result.rows as any[])
+      .filter(s => s.fromUserId === userId && s.status === "pending")
+      .reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+    const pendingReceivable = (result.rows as any[])
+      .filter(s => s.toUserId === userId && s.status === "pending")
+      .reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+    const totalPaid = (result.rows as any[])
+      .filter(s => s.fromUserId === userId && s.status === "paid")
+      .reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+    const totalReceived = (result.rows as any[])
+      .filter(s => s.toUserId === userId && s.status === "paid")
+      .reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+    return res.json({
+      settlements: result.rows,
+      summary: {
+        pendingOwed: pendingOwed.toFixed(2),
+        pendingReceivable: pendingReceivable.toFixed(2),
+        totalPaid: totalPaid.toFixed(2),
+        totalReceived: totalReceived.toFixed(2),
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PATCH /settlements/:id/pay — Mark settlement as paid ──
+
+router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { notes, proofUrl } = req.body;
+    const isPmOrTeam = req.session.userRole === "PROPERTY_MANAGER" || req.session.userRole === "PM_TEAM_MEMBER";
+    const resolvedId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
+
+    const result = await db.execute(sql`
+      SELECT * FROM pm_po_settlements WHERE id = ${id} AND from_user_id = ${resolvedId} AND status = 'pending'
+    `);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Settlement not found" });
+
+    await db.execute(sql`
+      UPDATE pm_po_settlements SET status = 'paid', paid_at = NOW(), notes = ${notes || null}, proof_url = ${proofUrl || null}, updated_at = NOW()
+      WHERE id = ${id}
+    `);
+
+    // Notify the recipient
+    const settlement = result.rows[0] as any;
+    // Get PM name for notification
+    const pmNameResult = await db.execute(sql`SELECT full_name FROM guests WHERE user_id = ${resolvedId} LIMIT 1`);
+    const pmName = (pmNameResult.rows[0] as any)?.full_name || "Property Manager";
+
+    await createNotification({
+      userId: settlement.to_user_id,
+      type: "INVOICE_CREATED",
+      title: `Settlement payment from ${pmName}`,
+      body: `${pmName} has paid you AED ${settlement.amount} for a booking settlement. Please review and confirm receipt.`,
+      linkUrl: "/portal/settlements",
+      relatedId: settlement.booking_id,
+    });
+
+    return res.json({ status: "paid" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PATCH /settlements/:id/confirm — PO confirms receipt ──
+
+router.patch("/settlements/:id/confirm", async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const { id } = req.params;
+
+    const result = await db.execute(sql`
+      SELECT * FROM pm_po_settlements WHERE id = ${id} AND to_user_id = ${userId} AND status = 'paid'
+    `);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Settlement not found or not yet paid" });
+
+    await db.execute(sql`
+      UPDATE pm_po_settlements SET status = 'confirmed', confirmed_at = NOW(), updated_at = NOW()
+      WHERE id = ${id}
+    `);
+
+    return res.json({ status: "confirmed" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /documents — All documents across properties and linked users ──
+
+router.get("/documents", requirePmPermission("documents.view"), async (req: Request, res: Response) => {
   try {
     const userRole = req.session.userRole;
-    if (userRole !== "PROPERTY_MANAGER" && userRole !== "PROPERTY_OWNER") {
+    if (!userRole || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "PROPERTY_OWNER"].includes(userRole)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    const userId = req.session.userId!;
+    const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
+    const resolvedPmId = isPmOrTeam ? await resolvePmId(req) : userId;
+
+    // Property documents: PM/team sees managed properties, PO sees owned properties
+    const propertyWhereClause = isPmOrTeam
+      ? sql`p.pm_user_id = ${resolvedPmId}`
+      : sql`p.po_user_id = ${userId}`;
+
+    const propertyDocs = await db.execute(sql`
+      SELECT
+        pd.id,
+        pd.document_type AS "documentType",
+        pd.name,
+        pd.description,
+        pd.file_url AS "fileUrl",
+        pd.has_expiry AS "hasExpiry",
+        pd.expiry_date AS "expiryDate",
+        pd.created_at AS "createdAt",
+        'property' AS "source",
+        p.id AS "propertyId",
+        p.public_name AS "propertyName",
+        p.building_name AS "buildingName",
+        p.unit_number AS "unitNumber",
+        NULL AS "userName",
+        NULL AS "userEmail",
+        NULL AS "userRole"
+      FROM st_property_documents pd
+      JOIN st_properties p ON p.id = pd.property_id
+      WHERE ${propertyWhereClause}
+      ORDER BY pd.created_at DESC
+    `);
+
+    // User documents: PM/team sees PM's own + linked POs/Tenants; PO sees own only
+    const userDocsWhereClause = isPmOrTeam
+      ? sql`ud.user_id = ${resolvedPmId}
+         OR ud.user_id IN (
+           SELECT target_user_id FROM pm_po_links
+           WHERE pm_user_id = ${resolvedPmId} AND status = 'accepted'
+         )`
+      : sql`ud.user_id = ${userId}`;
+
+    const userDocs = await db.execute(sql`
+      SELECT
+        ud.id,
+        dt.slug AS "documentType",
+        dt.label AS "name",
+        NULL AS "description",
+        ud.file_url AS "fileUrl",
+        dt.has_expiry AS "hasExpiry",
+        ud.expiry_date AS "expiryDate",
+        ud.created_at AS "createdAt",
+        'user' AS "source",
+        NULL AS "propertyId",
+        NULL AS "propertyName",
+        NULL AS "buildingName",
+        NULL AS "unitNumber",
+        g.full_name AS "userName",
+        u.email AS "userEmail",
+        u.role AS "userRole"
+      FROM user_documents ud
+      JOIN document_types dt ON dt.id = ud.document_type_id
+      JOIN users u ON u.id = ud.user_id
+      LEFT JOIN guests g ON g.user_id = u.id
+      WHERE ${userDocsWhereClause}
+      ORDER BY ud.created_at DESC
+    `);
+
+    return res.json({
+      propertyDocuments: propertyDocs.rows,
+      userDocuments: userDocs.rows,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /:id — Get full property details ──
+
+router.get("/:id", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const userRole = req.session.userRole;
+    if (!userRole || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "PROPERTY_OWNER"].includes(userRole)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
     const { id } = req.params;
-    const userId = req.session.userId;
+    const userId = (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER")
+      ? await resolvePmId(req) : req.session.userId;
 
     // Get property using Drizzle (returns camelCase keys)
     const [property] = await db
@@ -212,11 +507,11 @@ router.get("/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Property not found" });
     }
 
-    // PM must own it, PO must be linked
-    if (userRole === "PROPERTY_MANAGER" && property.pmUserId !== userId) {
+    // PM/team must own it, PO must be linked
+    if ((userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER") && property.pmUserId !== userId) {
       return res.status(403).json({ error: "Access denied" });
     }
-    if (userRole === "PROPERTY_OWNER" && property.poUserId !== userId) {
+    if (userRole === "PROPERTY_OWNER" && property.poUserId !== req.session.userId) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -256,7 +551,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 
 // ── PATCH /:id — Update property (auto-save / manual save) ──
 
-router.patch("/:id", async (req: Request, res: Response) => {
+router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) {
       return res.status(403).json({ error: "Access denied" });
@@ -290,7 +585,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
       "nightlyRate", "weekendRate", "minimumStay", "cleaningFee",
       "securityDepositRequired", "securityDepositAmount",
       "acceptedPaymentMethods", "bankAccountBelongsTo", "bankName",
-      "accountHolderName", "accountNumber", "iban", "swiftCode",
+      "accountHolderName", "accountNumber", "iban", "swiftCode", "paymentMethodConfig",
       "checkInTime", "checkOutTime", "cancellationPolicy",
       "poUserId", "commissionType", "commissionValue",
       "acquisitionType", "confirmed", "wizardStep", "status",
@@ -558,7 +853,7 @@ router.post("/:id/photos", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { url } = req.body;
@@ -596,7 +891,7 @@ router.patch("/:id/photos/reorder", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { order } = req.body;
@@ -619,7 +914,7 @@ router.patch("/:id/photos/:photoId", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, photoId } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const updates: any = {};
@@ -650,7 +945,7 @@ router.delete("/:id/photos/:photoId", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, photoId } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     // Check if deleting cover
@@ -693,7 +988,7 @@ router.put("/:id/amenities", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { amenities } = req.body;
@@ -732,7 +1027,7 @@ router.post("/:id/policies", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { name, description } = req.body;
@@ -766,7 +1061,7 @@ router.patch("/:id/policies/:policyId", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, policyId } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const updates: any = {};
@@ -790,7 +1085,7 @@ router.delete("/:id/policies/:policyId", async (req: Request, res: Response) => 
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, policyId } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     await db.delete(stPropertyPolicies)
@@ -807,7 +1102,7 @@ router.patch("/:id/policies-reorder", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { order } = req.body;
@@ -832,7 +1127,7 @@ router.patch("/:id/acquisition", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const allowedFields = [
@@ -883,7 +1178,7 @@ router.post("/:id/documents", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     const { documentType, name, fileUrl, hasExpiry, expiryDate } = req.body;
@@ -914,7 +1209,7 @@ router.delete("/:id/documents/:docId", async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, docId } = req.params;
-    const err = await verifyOwnership(id, req.session.userId!);
+    const err = await verifyOwnership(id, await resolvePmId(req));
     if (err) return res.status(err.status).json({ error: err.error });
 
     await db.delete(stPropertyDocuments)
@@ -1004,11 +1299,12 @@ router.get("/:id/expenses", async (req: Request, res: Response) => {
 
 // ── GET /:id/investment-summary — Investment summary for a property ──
 
-router.get("/:id/investment-summary", async (req: Request, res: Response) => {
+router.get("/:id/investment-summary", requirePmPermission("financials.view"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const userId = req.session.userId!;
     const userRole = req.session.userRole!;
+    const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
+    const resolvedId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
 
     const propResult = await db.execute(
       sql`SELECT pm_user_id AS "pmUserId", po_user_id AS "poUserId" FROM st_properties WHERE id = ${id}`
@@ -1016,10 +1312,10 @@ router.get("/:id/investment-summary", async (req: Request, res: Response) => {
     const prop = (propResult.rows || [])[0] as { pmUserId: string; poUserId: string | null } | undefined;
     if (!prop) return res.status(404).json({ error: "Property not found" });
 
-    if (userRole === "PROPERTY_MANAGER" && prop.pmUserId !== userId) {
+    if (isPmOrTeam && prop.pmUserId !== resolvedId) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== userId) {
+    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== resolvedId) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
@@ -1055,6 +1351,41 @@ router.get("/:id/investment-summary", async (req: Request, res: Response) => {
     const purchasePrice = parseFloat(acquisition?.purchasePrice || "0");
     const totalExpenses = totalExpensesNum;
 
+    // Booking income: exclude security deposit from income (it's not revenue)
+    const incomeResult = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS "bookingCount",
+        COALESCE(SUM(
+          b.subtotal::decimal + b.tourism_tax::decimal + b.vat::decimal
+        ), 0) AS "totalIncome",
+        COALESCE(SUM(b.subtotal::decimal), 0) AS "totalSubtotal",
+        COALESCE(SUM(b.cleaning_fee::decimal), 0) AS "totalCleaningFees",
+        COALESCE(SUM(b.tourism_tax::decimal), 0) AS "totalTourismTax",
+        COALESCE(SUM(b.vat::decimal), 0) AS "totalVat",
+        COALESCE(SUM(b.commission_amount::decimal), 0) AS "totalCommission",
+        COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "totalOwnerPayout"
+      FROM st_bookings b
+      WHERE b.property_id = ${id}
+        AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
+    `);
+    const income = (incomeResult.rows[0] || {}) as any;
+
+    // Security deposit tracking from st_security_deposits
+    const depositResult = await db.execute(sql`
+      SELECT
+        COALESCE(SUM(sd.amount::decimal), 0) AS "totalCollected",
+        COALESCE(SUM(CASE WHEN sd.status IN ('returned', 'partially_returned') THEN COALESCE(sd.returned_amount::decimal, sd.amount::decimal) ELSE 0 END), 0) AS "totalReturned",
+        COALESCE(SUM(CASE WHEN sd.status = 'pending' OR sd.status = 'received' THEN sd.amount::decimal ELSE 0 END), 0) AS "currentlyHeld",
+        COALESCE(SUM(CASE WHEN sd.status = 'forfeited' THEN sd.amount::decimal ELSE 0 END), 0) AS "totalForfeited"
+      FROM st_security_deposits sd
+      JOIN st_bookings b ON b.id = sd.booking_id
+      WHERE b.property_id = ${id}
+    `);
+    const deposits = (depositResult.rows[0] || {}) as any;
+
+    const totalIncome = parseFloat(income.totalIncome || "0");
+    const netProfit = totalIncome - totalExpenses;
+
     return res.json({
       purchasePrice: acquisition?.purchasePrice || "0",
       purchaseDate: acquisition?.purchaseDate || null,
@@ -1063,7 +1394,182 @@ router.get("/:id/investment-summary", async (req: Request, res: Response) => {
       expenseCount,
       totalInvestment: (purchasePrice + totalExpenses).toFixed(2),
       categoryBreakdown,
+      // Income (excludes security deposits)
+      totalIncome: totalIncome.toFixed(2),
+      bookingCount: income.bookingCount || 0,
+      totalSubtotal: parseFloat(income.totalSubtotal || "0").toFixed(2),
+      totalCleaningFees: parseFloat(income.totalCleaningFees || "0").toFixed(2),
+      totalCommission: parseFloat(income.totalCommission || "0").toFixed(2),
+      totalOwnerPayout: parseFloat(income.totalOwnerPayout || "0").toFixed(2),
+      netProfit: netProfit.toFixed(2),
+      // Security deposits (separate from income)
+      depositsCollected: parseFloat(deposits.totalCollected || "0").toFixed(2),
+      depositsReturned: parseFloat(deposits.totalReturned || "0").toFixed(2),
+      depositsHeld: parseFloat(deposits.currentlyHeld || "0").toFixed(2),
+      depositsForfeited: parseFloat(deposits.totalForfeited || "0").toFixed(2),
     });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /:id/transactions — Unified transaction history ──
+
+router.get("/:id/transactions", requirePmPermission("financials.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+
+    const propResult = await db.execute(
+      sql`SELECT pm_user_id AS "pmUserId", po_user_id AS "poUserId", acquisition_type AS "acquisitionType" FROM st_properties WHERE id = ${id}`
+    );
+    const prop = (propResult.rows || [])[0] as any;
+    if (!prop) return res.status(404).json({ error: "Property not found" });
+    if (userRole === "PROPERTY_MANAGER" && prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+    if (userRole === "PROPERTY_OWNER" && prop.poUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+
+    const transactions: any[] = [];
+
+    // 1. Property purchase
+    const acqResult = await db.execute(sql`
+      SELECT purchase_price, purchase_date FROM st_acquisition_details WHERE property_id = ${id} LIMIT 1
+    `);
+    const acq = (acqResult.rows || [])[0] as any;
+    if (acq?.purchase_price && acq?.purchase_date) {
+      transactions.push({
+        id: `acq-${id}`,
+        date: acq.purchase_date,
+        type: "purchase",
+        category: "Property Purchase",
+        description: `Property acquired (${(prop.acquisitionType || "cash").replace(/_/g, " ")})`,
+        amount: `-${acq.purchase_price}`,
+        direction: "out",
+      });
+    }
+
+    // 2. Expenses
+    const expResult = await db.execute(sql`
+      SELECT id, category, description, amount, expense_date FROM st_property_expenses WHERE property_id = ${id}
+    `);
+    for (const exp of expResult.rows as any[]) {
+      const catLabel = exp.category?.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+      transactions.push({
+        id: `exp-${exp.id}`,
+        date: exp.expense_date,
+        type: "expense",
+        category: catLabel,
+        description: exp.description || catLabel,
+        amount: `-${exp.amount}`,
+        direction: "out",
+      });
+    }
+
+    // 3. Booking income, security deposits, commissions
+    const bookingResult = await db.execute(sql`
+      SELECT b.id, b.status, b.check_in_date, b.check_out_date, b.created_at,
+        b.subtotal, b.cleaning_fee, b.tourism_tax, b.vat,
+        b.security_deposit_amount, b.commission_amount, b.owner_payout_amount,
+        b.total_amount,
+        g.full_name AS "guestName",
+        b.guest_name AS "manualGuestName"
+      FROM st_bookings b
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE b.property_id = ${id}
+        AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
+      ORDER BY b.created_at ASC
+    `);
+
+    for (const b of bookingResult.rows as any[]) {
+      const guest = b.guestName || b.manualGuestName || "Guest";
+      const checkIn = new Date(b.check_in_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+      const checkOut = new Date(b.check_out_date).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+
+      // Booking income (subtotal + cleaning + tax + vat, excluding deposit)
+      const incomeAmount = (
+        parseFloat(b.subtotal || "0") +
+        parseFloat(b.tourism_tax || "0") +
+        parseFloat(b.vat || "0")
+      ).toFixed(2);
+
+      transactions.push({
+        id: `booking-income-${b.id}`,
+        date: b.created_at,
+        type: "booking_income",
+        category: "Booking Income",
+        description: `${guest} (${checkIn} – ${checkOut})`,
+        amount: `+${incomeAmount}`,
+        direction: "in",
+      });
+
+      // Security deposit received
+      if (b.security_deposit_amount && parseFloat(b.security_deposit_amount) > 0) {
+        transactions.push({
+          id: `deposit-in-${b.id}`,
+          date: b.created_at,
+          type: "security_deposit_in",
+          category: "Security Deposit Received",
+          description: `Deposit held for ${guest}`,
+          amount: b.security_deposit_amount,
+          direction: "hold",
+        });
+      }
+
+      // PM Commission
+      if (b.commission_amount && parseFloat(b.commission_amount) > 0) {
+        transactions.push({
+          id: `commission-${b.id}`,
+          date: b.created_at,
+          type: "commission",
+          category: "PM Commission",
+          description: `Commission for ${guest} booking`,
+          amount: `-${b.commission_amount}`,
+          direction: "out",
+        });
+      }
+    }
+
+    // 4. Security deposit returns
+    const depositResult = await db.execute(sql`
+      SELECT sd.id, sd.amount, sd.returned_amount, sd.returned_at, sd.status, sd.deductions,
+        b.id AS "bookingId", g.full_name AS "guestName", b.guest_name AS "manualGuestName"
+      FROM st_security_deposits sd
+      JOIN st_bookings b ON b.id = sd.booking_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE b.property_id = ${id}
+        AND sd.status IN ('returned', 'partially_returned', 'forfeited')
+    `);
+
+    for (const sd of depositResult.rows as any[]) {
+      const guest = sd.guestName || sd.manualGuestName || "Guest";
+      if (sd.status === "forfeited") {
+        transactions.push({
+          id: `deposit-forfeit-${sd.id}`,
+          date: sd.returned_at || sd.created_at,
+          type: "security_deposit_forfeited",
+          category: "Security Deposit Forfeited",
+          description: `Deposit forfeited from ${guest}`,
+          amount: `+${sd.amount}`,
+          direction: "in",
+        });
+      } else {
+        const returned = sd.returned_amount || sd.amount;
+        transactions.push({
+          id: `deposit-out-${sd.id}`,
+          date: sd.returned_at,
+          type: "security_deposit_out",
+          category: "Security Deposit Returned",
+          description: `Deposit returned to ${guest}`,
+          amount: `-${returned}`,
+          direction: "out",
+        });
+      }
+    }
+
+    // Sort by date descending
+    transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return res.json(transactions);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -1075,6 +1581,7 @@ router.post("/:id/expenses", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.session.userId!;
+    const pmId = await resolvePmId(req);
 
     if (!isPM(req)) return res.status(403).json({ error: "Only PMs can add expenses" });
 
@@ -1082,7 +1589,7 @@ router.post("/:id/expenses", async (req: Request, res: Response) => {
     const [prop] = await db.select({ pmUserId: stProperties.pmUserId })
       .from(stProperties).where(eq(stProperties.id, id));
     if (!prop) return res.status(404).json({ error: "Property not found" });
-    if (prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
+    if (prop.pmUserId !== pmId) return res.status(403).json({ error: "Forbidden" });
 
     const { category, description, amount, expenseDate, receiptUrl } = req.body;
     if (!category || !amount || !expenseDate) {

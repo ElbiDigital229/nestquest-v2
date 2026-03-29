@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db/index";
 import { users, guests, otpVerifications, userAuditLog, signupSchema, loginSchema, PORTAL_ROLES, userDocuments, documentTypes, notifications } from "../../shared/schema";
-import { eq, and, gt, lte } from "drizzle-orm";
+import { eq, and, gt, lte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
 
@@ -271,8 +271,15 @@ router.post("/login", async (req: Request, res: Response) => {
 
     const { email, password, role } = parsed.data;
 
-    // Find user by email + role
-    const [user] = await db.select().from(users).where(and(eq(users.email, email), eq(users.role, role))).limit(1);
+    // Find user by email + role. If PM login fails, auto-try PM_TEAM_MEMBER
+    let [user] = await db.select().from(users).where(and(eq(users.email, email), eq(users.role, role))).limit(1);
+    if (!user && role === "PROPERTY_MANAGER") {
+      // Try PM_TEAM_MEMBER, then CLEANER
+      [user] = await db.select().from(users).where(and(eq(users.email, email), eq(users.role, "PM_TEAM_MEMBER"))).limit(1);
+      if (!user) {
+        [user] = await db.select().from(users).where(and(eq(users.email, email), eq(users.role, "CLEANER"))).limit(1);
+      }
+    }
     if (!user) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
@@ -286,6 +293,16 @@ router.post("/login", async (req: Request, res: Response) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) {
       return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    // Check team membership for PM_TEAM_MEMBER
+    if (user.role === "PM_TEAM_MEMBER") {
+      const [membership] = await db.execute(
+        sql`SELECT id, status FROM pm_team_members WHERE user_id = ${user.id} AND status = 'active' LIMIT 1`
+      ).then(r => r.rows as any[]);
+      if (!membership) {
+        return res.status(403).json({ error: "Your team access has been revoked. Contact your Property Manager." });
+      }
     }
 
     // Create session
@@ -304,7 +321,14 @@ router.post("/login", async (req: Request, res: Response) => {
 
     // Get profile name
     let name = user.email;
-    if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
+    if (user.role === "PM_TEAM_MEMBER") {
+      const tmResult = await db.execute(sql`SELECT full_name FROM pm_team_members WHERE user_id = ${user.id} AND status = 'active' LIMIT 1`);
+      if (tmResult.rows[0]) name = (tmResult.rows[0] as any).full_name || name;
+    } else if (user.role === "CLEANER") {
+      // Cleaner name from audit log metadata
+      const auditResult = await db.execute(sql`SELECT metadata FROM user_audit_log WHERE details LIKE '%' || ${user.email} || '%' AND action = 'SETTINGS_UPDATED' LIMIT 1`);
+      if (auditResult.rows[0]) { try { name = JSON.parse((auditResult.rows[0] as any).metadata).fullName || name; } catch {} }
+    } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
       const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
       if (guest) name = guest.fullName;
     }
@@ -424,7 +448,14 @@ router.post("/verify-login-otp", async (req: Request, res: Response) => {
 
     // Get profile name
     let name = user.email;
-    if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
+    if (user.role === "PM_TEAM_MEMBER") {
+      const tmResult = await db.execute(sql`SELECT full_name FROM pm_team_members WHERE user_id = ${user.id} AND status = 'active' LIMIT 1`);
+      if (tmResult.rows[0]) name = (tmResult.rows[0] as any).full_name || name;
+    } else if (user.role === "CLEANER") {
+      // Cleaner name from audit log metadata
+      const auditResult = await db.execute(sql`SELECT metadata FROM user_audit_log WHERE details LIKE '%' || ${user.email} || '%' AND action = 'SETTINGS_UPDATED' LIMIT 1`);
+      if (auditResult.rows[0]) { try { name = JSON.parse((auditResult.rows[0] as any).metadata).fullName || name; } catch {} }
+    } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
       const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
       if (guest) name = guest.fullName;
     }
@@ -456,13 +487,29 @@ router.get("/me", requireAuth, async (req: Request, res: Response) => {
     }
 
     let profile = null;
-    if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
+    if (user.role === "PM_TEAM_MEMBER") {
+      // Team members: get profile from pm_team_members, not guests
+      const tmResult = await db.execute(sql`
+        SELECT tm.full_name, tm.role_id, tm.status AS team_status,
+          r.name AS role_name, r.permissions
+        FROM pm_team_members tm
+        LEFT JOIN pm_roles r ON r.id = tm.role_id
+        WHERE tm.user_id = ${user.id} AND tm.status = 'active'
+        LIMIT 1
+      `);
+      const tm = tmResult.rows[0] as any;
+      profile = tm ? {
+        fullName: tm.full_name,
+        roleName: tm.role_name,
+        permissions: tm.permissions ? JSON.parse(tm.permissions) : [],
+        teamStatus: tm.team_status,
+      } : null;
+    } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
       const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
       profile = guest;
+      // Fire-and-forget: check for expiring documents (not for team members)
+      checkDocumentExpiry(user.id).catch(() => {});
     }
-
-    // Fire-and-forget: check for expiring documents
-    checkDocumentExpiry(user.id).catch(() => {});
 
     return res.json({
       user: {

@@ -83,30 +83,42 @@ export default function StepPricing({ property, onUpdate }: StepProps) {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) return parsed;
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
     return [];
   };
 
-  const [acceptedPaymentMethods, setAcceptedPaymentMethods] = useState<
-    string[]
-  >(parseMethods(property.acceptedPaymentMethods));
+  const parseConfig = (raw: any): Record<string, any> => {
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) return raw;
+    if (typeof raw === "string") {
+      try { return JSON.parse(raw); } catch {}
+    }
+    return {};
+  };
 
-  // Bank details (only if bank_transfer selected)
-  const [accountBelongsTo, setAccountBelongsTo] = useState(
-    property.bankAccountBelongsTo || "",
+  const [acceptedPaymentMethods, setAcceptedPaymentMethods] = useState<string[]>(
+    parseMethods(property.acceptedPaymentMethods),
   );
+
+  const [methodConfig, setMethodConfig] = useState<Record<string, any>>(
+    parseConfig(property.paymentMethodConfig),
+  );
+
+  // Legacy bank fields (kept for backward compat)
+  const [accountBelongsTo, setAccountBelongsTo] = useState(property.bankAccountBelongsTo || "");
   const [bankName, setBankName] = useState(property.bankName || "");
-  const [accountHolderName, setAccountHolderName] = useState(
-    property.accountHolderName || "",
-  );
-  const [accountNumber, setAccountNumber] = useState(
-    property.accountNumber || "",
-  );
+  const [accountHolderName, setAccountHolderName] = useState(property.accountHolderName || "");
+  const [accountNumber, setAccountNumber] = useState(property.accountNumber || "");
   const [iban, setIban] = useState(property.iban || "");
   const [swiftCode, setSwiftCode] = useState(property.swiftCode || "");
+
+  const updateMethodConfig = useCallback((method: string, field: string, value: string) => {
+    setMethodConfig(prev => {
+      const updated = { ...prev, [method]: { ...(prev[method] || {}), [field]: value } };
+      onUpdate({ paymentMethodConfig: JSON.stringify(updated) });
+      return updated;
+    });
+  }, [onUpdate]);
 
   const handleBlur = useCallback(
     (field: string, value: any) => {
@@ -313,20 +325,56 @@ export default function StepPricing({ property, onUpdate }: StepProps) {
             )}
           </div>
 
-          {/* Bank Transfer Details */}
-          {showBankDetails && (
+          {/* ── Card Config ── */}
+          {acceptedPaymentMethods.includes("card") && (
             <div className="rounded-md border p-4 space-y-4">
-              <h4 className="text-sm font-medium">Bank Transfer Details</h4>
-
+              <h4 className="text-sm font-medium">Card Payment Configuration</h4>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
-                {/* Account Belongs To */}
                 <div className="space-y-1.5">
                   <Label>Account Belongs To</Label>
                   <select
-                    value={accountBelongsTo}
+                    value={methodConfig.card?.belongsTo || ""}
+                    onChange={(e) => updateMethodConfig("card", "belongsTo", e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">Select...</option>
+                    <option value="property_manager">Property Manager</option>
+                    <option value="property_owner">Property Owner</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Account Reference</Label>
+                  <Input
+                    value={methodConfig.card?.accountRef || ""}
+                    onChange={(e) => updateMethodConfig("card", "accountRef", e.target.value)}
+                    placeholder="e.g. Stripe account ID"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Account Holder</Label>
+                  <Input
+                    value={methodConfig.card?.accountHolder || ""}
+                    onChange={(e) => updateMethodConfig("card", "accountHolder", e.target.value)}
+                    placeholder="Account holder name"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Bank Transfer Config ── */}
+          {acceptedPaymentMethods.includes("bank_transfer") && (
+            <div className="rounded-md border p-4 space-y-4">
+              <h4 className="text-sm font-medium">Bank Transfer Configuration</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                <div className="space-y-1.5">
+                  <Label>Account Belongs To</Label>
+                  <select
+                    value={methodConfig.bank_transfer?.belongsTo || accountBelongsTo || ""}
                     onChange={(e) => {
                       setAccountBelongsTo(e.target.value);
                       updateField("bankAccountBelongsTo", e.target.value || null);
+                      updateMethodConfig("bank_transfer", "belongsTo", e.target.value);
                     }}
                     className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
@@ -335,62 +383,86 @@ export default function StepPricing({ property, onUpdate }: StepProps) {
                     <option value="property_owner">Property Owner</option>
                   </select>
                 </div>
-
-                {/* Bank Name */}
                 <div className="space-y-1.5">
                   <Label>Bank Name</Label>
                   <Input
-                    value={bankName}
-                    onChange={(e) => setBankName(e.target.value)}
+                    value={methodConfig.bank_transfer?.bankName || bankName}
+                    onChange={(e) => {
+                      setBankName(e.target.value);
+                      updateMethodConfig("bank_transfer", "bankName", e.target.value);
+                    }}
                     onBlur={() => handleBlur("bankName", bankName)}
                     placeholder="e.g. Emirates NBD"
                   />
                 </div>
-
-                {/* Account Holder Name */}
                 <div className="space-y-1.5">
                   <Label>Account Holder Name</Label>
                   <Input
-                    value={accountHolderName}
-                    onChange={(e) => setAccountHolderName(e.target.value)}
-                    onBlur={() =>
-                      handleBlur("accountHolderName", accountHolderName)
-                    }
+                    value={methodConfig.bank_transfer?.accountHolder || accountHolderName}
+                    onChange={(e) => {
+                      setAccountHolderName(e.target.value);
+                      updateMethodConfig("bank_transfer", "accountHolder", e.target.value);
+                    }}
+                    onBlur={() => handleBlur("accountHolderName", accountHolderName)}
                     placeholder="Full name on account"
                   />
                 </div>
-
-                {/* Account Number */}
                 <div className="space-y-1.5">
                   <Label>Account Number</Label>
                   <Input
-                    value={accountNumber}
-                    onChange={(e) => setAccountNumber(e.target.value)}
+                    value={methodConfig.bank_transfer?.accountNumber || accountNumber}
+                    onChange={(e) => {
+                      setAccountNumber(e.target.value);
+                      updateMethodConfig("bank_transfer", "accountNumber", e.target.value);
+                    }}
                     onBlur={() => handleBlur("accountNumber", accountNumber)}
                     placeholder="Account number"
                   />
                 </div>
-
-                {/* IBAN */}
                 <div className="space-y-1.5">
                   <Label>IBAN</Label>
                   <Input
-                    value={iban}
-                    onChange={(e) => setIban(e.target.value)}
+                    value={methodConfig.bank_transfer?.iban || iban}
+                    onChange={(e) => {
+                      setIban(e.target.value);
+                      updateMethodConfig("bank_transfer", "iban", e.target.value);
+                    }}
                     onBlur={() => handleBlur("iban", iban)}
                     placeholder="e.g. AE070331234567890123456"
                   />
                 </div>
-
-                {/* SWIFT Code */}
                 <div className="space-y-1.5">
                   <Label>SWIFT Code</Label>
                   <Input
-                    value={swiftCode}
-                    onChange={(e) => setSwiftCode(e.target.value)}
+                    value={methodConfig.bank_transfer?.swiftCode || swiftCode}
+                    onChange={(e) => {
+                      setSwiftCode(e.target.value);
+                      updateMethodConfig("bank_transfer", "swiftCode", e.target.value);
+                    }}
                     onBlur={() => handleBlur("swiftCode", swiftCode)}
                     placeholder="Optional"
                   />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Cash Config ── */}
+          {acceptedPaymentMethods.includes("cash") && (
+            <div className="rounded-md border p-4 space-y-4">
+              <h4 className="text-sm font-medium">Cash Collection Configuration</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                <div className="space-y-1.5">
+                  <Label>Collected By</Label>
+                  <select
+                    value={methodConfig.cash?.collectedBy || ""}
+                    onChange={(e) => updateMethodConfig("cash", "collectedBy", e.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">Select...</option>
+                    <option value="property_manager">Property Manager</option>
+                    <option value="property_owner">Property Owner</option>
+                  </select>
                 </div>
               </div>
             </div>

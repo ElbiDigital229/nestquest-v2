@@ -41,6 +41,12 @@ interface PropertyInfo {
   id: string;
   publicName: string;
   acceptedPaymentMethods: string[];
+  bankName?: string;
+  accountHolderName?: string;
+  accountNumber?: string;
+  iban?: string;
+  swiftCode?: string;
+  pmEmail?: string;
 }
 
 const PAYMENT_LABELS: Record<string, { label: string; icon: any }> = {
@@ -88,12 +94,15 @@ export default function BookingPayment() {
     Promise.all([
       api.get<PropertyInfo>(`/public/properties/${propertyId}`),
       api.post<PriceBreakdown>("/bookings/calculate-price", { propertyId, checkIn, checkOut }),
+      api.get<any>(`/bookings/payment-details/${propertyId}`),
     ])
-      .then(([prop, price]) => {
-        setProperty(prop);
+      .then(([prop, price, paymentDetails]) => {
+        // Merge bank details from authenticated endpoint
+        const merged = { ...prop, ...paymentDetails };
+        setProperty(merged);
         setPricing(price);
-        const methods = prop.acceptedPaymentMethods || [];
-        if (methods.length === 1) setPaymentMethod(methods[0]);
+        const methods = merged.acceptedPaymentMethods || [];
+        if (Array.isArray(methods) && methods.length === 1) setPaymentMethod(methods[0]);
         setLoading(false);
       })
       .catch((err) => {
@@ -108,6 +117,26 @@ export default function BookingPayment() {
     if (!paymentMethod) {
       toast({ title: "Please select a payment method", variant: "destructive" });
       return;
+    }
+
+    // Validate card fields if paying by card
+    if (paymentMethod === "credit_card" || paymentMethod === "card") {
+      if (!cardName.trim()) {
+        toast({ title: "Please enter the cardholder name", variant: "destructive" });
+        return;
+      }
+      if (cardNumber.replace(/\s/g, "").length < 16) {
+        toast({ title: "Please enter a valid card number", variant: "destructive" });
+        return;
+      }
+      if (cardExpiry.length < 5) {
+        toast({ title: "Please enter a valid expiry date", variant: "destructive" });
+        return;
+      }
+      if (cardCvc.length < 3) {
+        toast({ title: "Please enter a valid CVC", variant: "destructive" });
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -208,8 +237,8 @@ export default function BookingPayment() {
               </CardContent>
             </Card>
 
-            {/* Mock Card Form — only show for credit_card */}
-            {paymentMethod === "credit_card" && (
+            {/* Card Form */}
+            {(paymentMethod === "credit_card" || paymentMethod === "card") && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
@@ -269,11 +298,64 @@ export default function BookingPayment() {
             {/* Bank Transfer instructions */}
             {paymentMethod === "bank_transfer" && (
               <Card>
-                <CardContent className="p-4">
-                  <p className="text-sm text-muted-foreground">
-                    After submitting, the property manager will provide bank transfer details.
-                    Your booking will be held for 24 hours pending confirmation.
-                  </p>
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Banknote className="h-4 w-4" />
+                    Bank Transfer Details
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {property.bankName ? (
+                    <>
+                      <div className="bg-muted/50 rounded-lg p-4 space-y-3">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Bank Name</span>
+                          <span className="font-medium">{property.bankName}</span>
+                        </div>
+                        {property.accountHolderName && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Account Holder</span>
+                            <span className="font-medium">{property.accountHolderName}</span>
+                          </div>
+                        )}
+                        {property.accountNumber && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Account Number</span>
+                            <span className="font-medium font-mono">{property.accountNumber}</span>
+                          </div>
+                        )}
+                        {property.iban && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">IBAN</span>
+                            <span className="font-medium font-mono">{property.iban}</span>
+                          </div>
+                        )}
+                        {property.swiftCode && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">SWIFT Code</span>
+                            <span className="font-medium font-mono">{property.swiftCode}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <Separator />
+
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                        <p className="text-sm text-amber-800 font-medium mb-1">After making the transfer:</p>
+                        <p className="text-sm text-amber-700">
+                          Please email a screenshot of your payment confirmation to{" "}
+                          <a href={`mailto:${property.pmEmail}`} className="font-semibold underline">{property.pmEmail}</a>
+                        </p>
+                        <p className="text-xs text-amber-600 mt-2">
+                          Your booking will be held for 24 hours pending payment confirmation.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Bank transfer details are not available. Please contact the property manager.
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             )}

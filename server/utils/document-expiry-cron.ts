@@ -21,7 +21,7 @@ export async function checkAllDocumentExpiry(): Promise<void> {
       g.trade_license_expiry AS "tradeLicenseExpiry"
     FROM users u
     JOIN guests g ON g.user_id = u.id
-    WHERE u.role != 'SUPER_ADMIN'
+    WHERE u.role NOT IN ('SUPER_ADMIN', 'PM_TEAM_MEMBER')
   `);
 
   const docsToCheck: { userId: string; relatedId: string; label: string; expiryDate: Date }[] = [];

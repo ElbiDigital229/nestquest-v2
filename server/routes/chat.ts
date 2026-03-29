@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { messages, guests, users, pmPoLinks, userAuditLog, PORTAL_ROLES } from "../../shared/schema";
+import { messages, guests, users, pmPoLinks, pmTeamMembers, userAuditLog, PORTAL_ROLES } from "../../shared/schema";
 import { eq, and, isNull, ne, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
@@ -22,19 +22,31 @@ async function getGuestIdForUser(userId: string): Promise<string | null> {
 // ══════════════════════════════════════════════════════
 
 async function validateDmAccess(linkId: string, userId: string) {
+  // Check pm_po_links first
   const [link] = await db
     .select()
     .from(pmPoLinks)
     .where(and(eq(pmPoLinks.id, linkId), eq(pmPoLinks.status, "accepted")))
     .limit(1);
-  if (!link) return null;
-  if (link.pmUserId !== userId && link.targetUserId !== userId) return null;
-  return link;
+  if (link && (link.pmUserId === userId || link.targetUserId === userId)) return link;
+
+  // Check team member links (using team member ID as linkId)
+  const [teamLink] = await db
+    .select()
+    .from(pmTeamMembers)
+    .where(and(eq(pmTeamMembers.id, linkId), eq(pmTeamMembers.status, "active")))
+    .limit(1);
+  if (teamLink && (teamLink.pmUserId === userId || teamLink.userId === userId)) {
+    return { id: teamLink.id, pmUserId: teamLink.pmUserId, targetUserId: teamLink.userId, targetRole: "PM_TEAM_MEMBER", status: "accepted" };
+  }
+
+  return null;
 }
 
 router.get("/dm/conversations", async (req: Request, res: Response) => {
   try {
     const { userId } = req.session;
+    // PM-PO/Tenant links + PM-Team member links in one query
     const rows = await db.execute(sql`
       SELECT
         l.id AS "linkId",
@@ -50,6 +62,24 @@ router.get("/dm/conversations", async (req: Request, res: Response) => {
       LEFT JOIN guests g ON g.user_id = u.id
       WHERE (l.pm_user_id = ${userId!} OR l.target_user_id = ${userId!})
       AND l.status = 'accepted'
+
+      UNION ALL
+
+      SELECT
+        tm.id AS "linkId",
+        CASE WHEN tm.pm_user_id = ${userId!} THEN tm.user_id ELSE tm.pm_user_id END AS "otherUserId",
+        CASE WHEN tm.pm_user_id = ${userId!} THEN 'PM_TEAM_MEMBER' ELSE 'PROPERTY_MANAGER' END AS "otherRole",
+        g2.full_name AS "otherName",
+        u2.email AS "otherEmail",
+        (SELECT content FROM messages WHERE conversation_id = tm.id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
+        (SELECT created_at FROM messages WHERE conversation_id = tm.id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
+        (SELECT COUNT(*)::int FROM messages WHERE conversation_id = tm.id AND sender_id != ${userId!} AND read_at IS NULL) AS "unreadCount"
+      FROM pm_team_members tm
+      JOIN users u2 ON u2.id = CASE WHEN tm.pm_user_id = ${userId!} THEN tm.user_id ELSE tm.pm_user_id END
+      LEFT JOIN guests g2 ON g2.user_id = u2.id
+      WHERE (tm.pm_user_id = ${userId!} OR tm.user_id = ${userId!})
+      AND tm.status = 'active'
+
       ORDER BY "lastMessageAt" DESC NULLS LAST
     `);
     return res.json(rows.rows);

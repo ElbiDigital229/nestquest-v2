@@ -5,9 +5,9 @@ import { sql } from "drizzle-orm";
 
 // ── Enums ──────────────────────────────────────────────
 
-export const roleEnum = pgEnum("role", ["SUPER_ADMIN", "GUEST", "CLEANER", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"]);
+export const roleEnum = pgEnum("role", ["SUPER_ADMIN", "GUEST", "CLEANER", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT", "PM_TEAM_MEMBER"]);
 
-export const PORTAL_ROLES = ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"] as const;
+export const PORTAL_ROLES = ["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT", "PM_TEAM_MEMBER"] as const;
 export const ROLE_LABELS: Record<string, string> = {
   SUPER_ADMIN: "Super Admin",
   GUEST: "Guest",
@@ -454,6 +454,9 @@ export const stProperties = pgTable("st_properties", {
   commissionType: stCommissionTypeEnum("commission_type"),
   commissionValue: text("commission_value"),
 
+  // Per-method payment config (JSON)
+  paymentMethodConfig: text("payment_method_config"),
+
   // Step 8: Acquisition
   acquisitionType: stAcquisitionTypeEnum("acquisition_type"),
   confirmed: boolean("confirmed").default(false),
@@ -898,7 +901,7 @@ export const signupSchema = z.object({
 export const loginSchema = z.object({
   email: z.string().email().transform(s => s.toLowerCase().trim()),
   password: z.string().min(1, "Password is required"),
-  role: z.enum(["SUPER_ADMIN", "GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"]),
+  role: z.enum(["SUPER_ADMIN", "GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT", "PM_TEAM_MEMBER"]),
 });
 
 // ── Types ──────────────────────────────────────────────
@@ -949,3 +952,73 @@ export type StReview = typeof stReviews.$inferSelect;
 export type InsertStReview = typeof stReviews.$inferInsert;
 export type PmSetting = typeof pmSettings.$inferSelect;
 export type InsertPmSetting = typeof pmSettings.$inferInsert;
+
+// ── PM Roles & Team Members ─────────────────────────
+
+export const PM_PERMISSIONS = [
+  "properties.view", "properties.create", "properties.edit", "properties.delete",
+  "bookings.view", "bookings.manage",
+  "owners.view", "owners.manage",
+  "tenants.view", "tenants.manage",
+  "financials.view", "financials.manage",
+  "documents.view", "documents.manage",
+  "cleaners.manage",
+  "team.manage",
+  "billing.view", "billing.manage",
+] as const;
+
+export const PM_PERMISSION_LABELS: Record<string, string> = {
+  "properties.view": "View Properties",
+  "properties.create": "Create Properties",
+  "properties.edit": "Edit Properties",
+  "properties.delete": "Delete Properties",
+  "bookings.view": "View Bookings",
+  "bookings.manage": "Manage Bookings",
+  "owners.view": "View Owner Info",
+  "owners.manage": "Manage Owners",
+  "tenants.view": "View Tenant Info",
+  "tenants.manage": "Manage Tenants",
+  "financials.view": "View Financials",
+  "financials.manage": "Manage Financials",
+  "documents.view": "View Documents",
+  "documents.manage": "Manage Documents",
+  "cleaners.manage": "Manage Cleaners",
+  "team.manage": "Manage Team",
+  "billing.view": "View Billing",
+  "billing.manage": "Manage Billing",
+};
+
+export const pmRoles = pgTable("pm_roles", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  pmUserId: varchar("pm_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  permissions: text("permissions").notNull().default("[]"),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const pmTeamMembers = pgTable("pm_team_members", {
+  id: varchar("id", { length: 36 })
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  pmUserId: varchar("pm_user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id", { length: 36 })
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  roleId: varchar("role_id", { length: 36 })
+    .references(() => pmRoles.id, { onDelete: "set null" }),
+  fullName: text("full_name"),
+  status: text("status").notNull().default("invited"),
+  invitedAt: timestamp("invited_at").notNull().defaultNow(),
+  acceptedAt: timestamp("accepted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});

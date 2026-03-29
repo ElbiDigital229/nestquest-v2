@@ -1030,6 +1030,17 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
     expenseCount: number;
     totalInvestment: string;
     categoryBreakdown: { category: string; total: string; count: number }[];
+    totalIncome: string;
+    bookingCount: number;
+    totalSubtotal: string;
+    totalCleaningFees: string;
+    totalCommission: string;
+    totalOwnerPayout: string;
+    netProfit: string;
+    depositsCollected: string;
+    depositsReturned: string;
+    depositsHeld: string;
+    depositsForfeited: string;
   }>({
     queryKey: [`/st-properties/${property.id}/investment-summary`],
     queryFn: () => api.get(`/st-properties/${property.id}/investment-summary`),
@@ -1076,6 +1087,52 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
         </div>
       </div>
 
+      {/* Income Cards */}
+      <h4 className="text-sm font-semibold mb-3">Revenue</h4>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-emerald-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Income</p>
+          <p className="text-xl font-bold text-emerald-700">{formatCurrency(summary?.totalIncome)}</p>
+          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s)</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
+          <p className="text-xl font-bold text-purple-700">{formatCurrency(summary?.totalCommission)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-cyan-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Owner Payout</p>
+          <p className="text-xl font-bold text-cyan-700">{formatCurrency(summary?.totalOwnerPayout)}</p>
+        </div>
+        <div className={`rounded-lg border p-4 ${parseFloat(summary?.netProfit || "0") >= 0 ? "bg-green-50/50" : "bg-red-50/50"}`}>
+          <p className="text-xs text-muted-foreground mb-1">Net Profit</p>
+          <p className={`text-xl font-bold ${parseFloat(summary?.netProfit || "0") >= 0 ? "text-green-700" : "text-red-700"}`}>
+            {formatCurrency(summary?.netProfit)}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">Income - Expenses</p>
+        </div>
+      </div>
+
+      {/* Security Deposit Cards */}
+      <h4 className="text-sm font-semibold mb-3">Security Deposits</h4>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="rounded-lg border p-4 bg-slate-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Collected</p>
+          <p className="text-xl font-bold text-slate-700">{formatCurrency(summary?.depositsCollected)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-amber-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Currently Held</p>
+          <p className="text-xl font-bold text-amber-700">{formatCurrency(summary?.depositsHeld)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-teal-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Returned</p>
+          <p className="text-xl font-bold text-teal-700">{formatCurrency(summary?.depositsReturned)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-red-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Forfeited</p>
+          <p className="text-xl font-bold text-red-700">{formatCurrency(summary?.depositsForfeited)}</p>
+        </div>
+      </div>
+
       {/* Category Breakdown */}
       {summary?.categoryBreakdown && summary.categoryBreakdown.length > 0 && (
         <div className="mb-8">
@@ -1098,47 +1155,82 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
         </div>
       )}
 
-      {/* Expenses List (Read-Only) */}
-      <div>
-        <h4 className="text-sm font-semibold mb-3">Expense History</h4>
-        {!expenses || expenses.length === 0 ? (
-          <div className="text-center py-12 border rounded-lg">
-            <DollarSign className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-muted-foreground text-sm">No expenses recorded yet.</p>
-            <p className="text-muted-foreground text-xs mt-1">Add expenses from the Transactions tab.</p>
-          </div>
-        ) : (
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-muted/50 text-left">
-                  <th className="px-4 py-2 font-medium">Date</th>
-                  <th className="px-4 py-2 font-medium">Category</th>
-                  <th className="px-4 py-2 font-medium">Description</th>
-                  <th className="px-4 py-2 font-medium text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {expenses.map((exp: any) => {
-                  const catLabel = EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.label || exp.category;
-                  return (
-                    <tr key={exp.id} className="border-t">
-                      <td className="px-4 py-2.5 text-muted-foreground">{formatDateShort(exp.expenseDate)}</td>
-                      <td className="px-4 py-2.5">
-                        <Badge className={cn("text-[11px]", CATEGORY_COLORS[exp.category] || "bg-gray-100 text-gray-700")}>
-                          {catLabel}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-2.5 truncate max-w-[200px]">{exp.description || "—"}</td>
-                      <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(exp.amount)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* Transaction History */}
+      <TransactionHistory propertyId={property.id} />
+    </div>
+  );
+}
+
+// ─── Transaction History Component ──────────────────────────────────────────
+
+const TX_TYPE_STYLES: Record<string, { badge: string; icon: string }> = {
+  purchase: { badge: "bg-blue-100 text-blue-800", icon: "text-blue-600" },
+  expense: { badge: "bg-orange-100 text-orange-800", icon: "text-orange-600" },
+  booking_income: { badge: "bg-emerald-100 text-emerald-800", icon: "text-emerald-600" },
+  security_deposit_in: { badge: "bg-amber-100 text-amber-800", icon: "text-amber-600" },
+  security_deposit_out: { badge: "bg-teal-100 text-teal-800", icon: "text-teal-600" },
+  security_deposit_forfeited: { badge: "bg-red-100 text-red-800", icon: "text-red-600" },
+  commission: { badge: "bg-purple-100 text-purple-800", icon: "text-purple-600" },
+};
+
+function TransactionHistory({ propertyId }: { propertyId: string }) {
+  const { data: transactions } = useQuery<any[]>({
+    queryKey: [`/st-properties/${propertyId}/transactions`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/transactions`),
+  });
+
+  return (
+    <div>
+      <h4 className="text-sm font-semibold mb-3">Transaction History</h4>
+      {!transactions || transactions.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <DollarSign className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground text-sm">No transactions recorded yet.</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 text-left">
+                <th className="px-4 py-2 font-medium">Date</th>
+                <th className="px-4 py-2 font-medium">Type</th>
+                <th className="px-4 py-2 font-medium">Description</th>
+                <th className="px-4 py-2 font-medium text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.map((tx: any) => {
+                const style = TX_TYPE_STYLES[tx.type] || { badge: "bg-gray-100 text-gray-700", icon: "" };
+                const amountStr = tx.amount?.toString() || "0";
+                const isPositive = amountStr.startsWith("+");
+                const isNegative = amountStr.startsWith("-");
+                const isHold = tx.direction === "hold";
+                const amountColor = isPositive ? "text-emerald-700" : isNegative ? "text-red-700" : isHold ? "text-amber-700" : "";
+                const displayAmount = isHold
+                  ? `AED ${parseFloat(amountStr).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} (held)`
+                  : `${isPositive ? "+" : isNegative ? "-" : ""}AED ${Math.abs(parseFloat(amountStr)).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+                return (
+                  <tr key={tx.id} className="border-t hover:bg-accent/30 transition-colors">
+                    <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">
+                      {tx.date ? formatDateShort(tx.date) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <Badge className={cn("text-[11px] border-0", style.badge)}>
+                        {tx.category}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-2.5 truncate max-w-[250px]">{tx.description || "—"}</td>
+                    <td className={cn("px-4 py-2.5 text-right font-semibold whitespace-nowrap", amountColor)}>
+                      {displayAmount}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -1167,7 +1259,7 @@ function bookingFormatDate(d: string) {
 
 function bookingFormatCurrency(v: number | null | undefined) {
   if (v == null) return "—";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "AED" }).format(v);
 }
 
 // ─── Calendar Sub-view ──────────────────────────────────────────────────────

@@ -17,31 +17,56 @@ import {
   Users,
   CreditCard,
   Building,
+  SprayCan,
+  ClipboardCheck,
   ChevronDown,
   ChevronRight,
   CalendarDays,
+  FileText,
+  BarChart3,
+  Handshake,
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
 type NavItem = { label: string; href: string; icon: any };
 
-const baseNavItems: NavItem[] = [
-  { label: "Settings", href: "/portal/settings", icon: Settings },
-  { label: "My Bookings", href: "/portal/my-bookings", icon: CalendarDays },
-  { label: "Messages", href: "/portal/messages", icon: MessageSquare },
-  { label: "Notifications", href: "/portal/notifications", icon: Bell },
-];
+// Base nav items — role-aware labels
+function getBaseNavItems(role: string): NavItem[] {
+  if (role === "CLEANER") {
+    return [
+      { label: "My Tasks", href: "/portal/cleaner-tasks", icon: ClipboardCheck },
+      { label: "Notifications", href: "/portal/notifications", icon: Bell },
+      { label: "Settings", href: "/portal/settings", icon: Settings },
+    ];
+  }
+  return [
+    { label: "Settings", href: "/portal/settings", icon: Settings },
+    { label: role === "PM_TEAM_MEMBER" ? "Bookings" : "My Bookings", href: "/portal/my-bookings", icon: CalendarDays },
+    { label: "Messages", href: "/portal/messages", icon: MessageSquare },
+    { label: "Notifications", href: "/portal/notifications", icon: Bell },
+  ];
+}
 
 const roleNavItems: Record<string, NavItem[]> = {
   PROPERTY_MANAGER: [
-    { label: "Plans & Billing", href: "/portal/plans", icon: CreditCard },
+    { label: "Documents", href: "/portal/documents", icon: FileText },
     { label: "Property Owners", href: "/portal/property-owners", icon: Users },
     { label: "Tenants", href: "/portal/tenants", icon: Users },
+    { label: "Settlements", href: "/portal/settlements", icon: Handshake },
+    { label: "Team", href: "/portal/team", icon: Users },
+    { label: "My Reports", href: "/portal/reports", icon: BarChart3 },
   ],
   PROPERTY_OWNER: [
     { label: "My Properties", href: "/portal/po-properties", icon: Home },
+    { label: "Documents", href: "/portal/documents", icon: FileText },
+    { label: "Settlements", href: "/portal/settlements", icon: Handshake },
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
+  PM_TEAM_MEMBER: [
+    { label: "Documents", href: "/portal/documents", icon: FileText },
+    { label: "Settlements", href: "/portal/settlements", icon: Handshake },
+  ],
+  CLEANER: [],
   TENANT: [
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
@@ -52,6 +77,11 @@ const stNavItems: NavItem[] = [
   { label: "ST Properties", href: "/portal/st-properties", icon: Home },
 ];
 
+// Cleaner ops sub-nav
+const cleanerOpsItems: NavItem[] = [
+  { label: "Cleaner Ops", href: "/portal/cleaner-ops", icon: SprayCan },
+];
+
 export default function PortalLayout({ children, fullWidth }: { children: React.ReactNode; fullWidth?: boolean }) {
   const { user, logout } = useAuth();
   const [location] = useLocation();
@@ -60,7 +90,7 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
 
   const handleLogout = async () => {
     await logout();
-    window.location.href = "/portal/login";
+    window.location.href = "/login";
   };
 
   const initials = user?.name
@@ -120,7 +150,7 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
         {/* Navigation */}
         <ScrollArea className="flex-1 py-2">
           <nav className="px-2 space-y-1">
-            {[...baseNavItems, ...(roleNavItems[user?.role || ""] || [])].map((item) => {
+            {[...getBaseNavItems(user?.role || ""), ...(roleNavItems[user?.role || ""] || [])].map((item) => {
               const isActive = location === item.href;
               return (
                 <Link key={item.href} href={item.href}>
@@ -141,7 +171,7 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
             })}
 
             {/* Short Term collapsible section — PM only */}
-            {user?.role === "PROPERTY_MANAGER" && (
+            {(user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER") && (
               <>
                 <div className="pt-2">
                   <button
@@ -178,6 +208,24 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
                     );
                   })}
               </>
+            )}
+
+            {/* Cleaner Ops — PM and team members with cleaners.manage */}
+            {(user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER") && (
+              <Link href="/portal/cleaner-ops">
+                <div
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors cursor-pointer mt-1",
+                    location.startsWith("/portal/cleaner-ops")
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent/50"
+                  )}
+                  onClick={() => setSidebarOpen(false)}
+                >
+                  <SprayCan className="h-4 w-4 shrink-0" />
+                  Cleaner Ops
+                </div>
+              </Link>
             )}
           </nav>
         </ScrollArea>

@@ -34,11 +34,11 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
               </>
             ) : (
               <>
-                <Button variant="ghost" size="sm" onClick={() => navigate("/login/guest")}>
+                <Button variant="ghost" size="sm" onClick={() => navigate("/login")}>
                   <LogIn className="h-4 w-4 mr-2" />
                   Sign In
                 </Button>
-                <Button size="sm" onClick={() => navigate("/signup/guest")}>
+                <Button size="sm" onClick={() => navigate("/login")}>
                   Sign Up
                 </Button>
               </>
