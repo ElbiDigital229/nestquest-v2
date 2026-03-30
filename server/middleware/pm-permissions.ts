@@ -69,6 +69,11 @@ export function requirePmPermission(...requiredPermissions: string[]) {
     try {
       const userRole = req.session.userRole;
 
+      // Block CLEANER — they should never access PM routes
+      if (userRole === "CLEANER") {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
       // Non-PM roles pass through (routes handle their own access checks)
       if (!userRole || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER"].includes(userRole)) {
         return next();

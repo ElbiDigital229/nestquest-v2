@@ -67,7 +67,7 @@ router.get("/properties", async (req: Request, res: Response) => {
     const offset = (pageNum - 1) * limitNum;
 
     if (areaId) conditions.push(`p.area_id = '${areaId}'`);
-    if (city) conditions.push(`p.city = '${city}'`);
+    if (city) conditions.push(`p.city::text ILIKE '${city}'`);
     if (guests) conditions.push(`p.max_guests >= ${parseInt(guests)}`);
     if (minPrice) conditions.push(`CAST(p.nightly_rate AS DECIMAL) >= ${parseFloat(minPrice)}`);
     if (maxPrice) conditions.push(`CAST(p.nightly_rate AS DECIMAL) <= ${parseFloat(maxPrice)}`);

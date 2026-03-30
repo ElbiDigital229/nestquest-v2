@@ -75,6 +75,7 @@ const roleNavItems: Record<string, NavItem[]> = {
 // ST sub-nav items for the collapsible section
 const stNavItems: NavItem[] = [
   { label: "ST Properties", href: "/portal/st-properties", icon: Home },
+  { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
 ];
 
 // Cleaner ops sub-nav

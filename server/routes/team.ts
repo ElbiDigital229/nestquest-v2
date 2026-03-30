@@ -10,6 +10,15 @@ import { createNotification } from "../utils/notify";
 const router = Router();
 router.use(requireAuth);
 
+// Block non-PM/non-team roles from all team routes
+router.use((req, res, next) => {
+  const role = req.session.userRole;
+  if (!role || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER"].includes(role)) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  next();
+});
+
 // ── ROLES CRUD ──────────────────────────────────────────
 
 // List PM's roles

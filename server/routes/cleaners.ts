@@ -10,6 +10,15 @@ import { createNotification } from "../utils/notify";
 const router = Router();
 router.use(requireAuth);
 
+// Block non-PM/team/cleaner roles
+router.use((req, res, next) => {
+  const role = req.session.userRole;
+  if (!role || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "CLEANER"].includes(role)) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  next();
+});
+
 // ══════════════════════════════════════════════════════
 // CLEANER ACCOUNTS
 // ══════════════════════════════════════════════════════
@@ -241,7 +250,7 @@ router.post("/tasks", requirePmPermission("cleaners.manage"), async (req: Reques
   try {
     const pmId = await getPmUserId(req);
     const createdBy = req.session.userId!;
-    const { propertyId, cleanerUserId, checklistId, title, notes, dueAt, priority } = req.body;
+    const { propertyId, cleanerUserId, checklistId, title, notes, dueAt, priority, customItems } = req.body;
 
     if (!propertyId) return res.status(400).json({ error: "Property is required" });
     if (!cleanerUserId) return res.status(400).json({ error: "Cleaner is required" });
@@ -253,7 +262,9 @@ router.post("/tasks", requirePmPermission("cleaners.manage"), async (req: Reques
       VALUES (${taskId}, ${propertyId}, ${pmId}, ${cleanerUserId}, ${checklistId || null}, ${title.trim()}, ${notes || null}, ${dueAt || null}, ${priority || 'normal'}, ${createdBy}, 'pending')
     `);
 
-    // Copy checklist items into task items
+    let displayOrder = 0;
+
+    // Copy checklist template items first
     if (checklistId) {
       const items = await db.execute(sql`
         SELECT label, display_order FROM cleaning_checklist_items WHERE checklist_id = ${checklistId} ORDER BY display_order
@@ -261,8 +272,22 @@ router.post("/tasks", requirePmPermission("cleaners.manage"), async (req: Reques
       for (const item of items.rows as any[]) {
         await db.execute(sql`
           INSERT INTO cleaning_task_items (id, task_id, label, display_order)
-          VALUES (gen_random_uuid()::text, ${taskId}, ${item.label}, ${item.display_order})
+          VALUES (gen_random_uuid()::text, ${taskId}, ${item.label}, ${displayOrder})
         `);
+        displayOrder++;
+      }
+    }
+
+    // Add custom items after checklist items
+    if (Array.isArray(customItems)) {
+      for (const label of customItems) {
+        if (label?.trim()) {
+          await db.execute(sql`
+            INSERT INTO cleaning_task_items (id, task_id, label, display_order)
+            VALUES (gen_random_uuid()::text, ${taskId}, ${label.trim()}, ${displayOrder})
+          `);
+          displayOrder++;
+        }
       }
     }
 
@@ -373,7 +398,7 @@ router.patch("/tasks/:id/complete", async (req: Request, res: Response) => {
     if (t) {
       await createNotification({
         userId: t.pm_user_id,
-        type: "BOOKING_COMPLETED",
+        type: "BOOKING_CHECKOUT",
         title: "Cleaning task completed",
         body: `Cleaner has completed: ${t.title}`,
         relatedId: id,
@@ -459,54 +484,61 @@ router.delete("/automation-rules/:id", requirePmPermission("cleaners.manage"), a
 // ══════════════════════════════════════════════════════
 
 export async function triggerCleaningAutomation(propertyId: string, pmUserId: string, bookingId: string): Promise<void> {
-  const rules = await db.execute(sql`
-    SELECT r.id, r.checklist_id, r.delay_minutes,
-      c.name AS checklist_name
-    FROM cleaning_automation_rules r
-    JOIN cleaning_checklists c ON c.id = r.checklist_id
-    WHERE r.property_id = ${propertyId} AND r.pm_user_id = ${pmUserId} AND r.is_active = true
-  `);
-
-  for (const rule of rules.rows as any[]) {
-    const dueAt = new Date(Date.now() + rule.delay_minutes * 60 * 1000);
-    const taskId = crypto.randomUUID();
-
-    // Find first available cleaner (most recent one assigned to this PM's tasks)
-    const cleanerResult = await db.execute(sql`
-      SELECT DISTINCT cleaner_user_id FROM cleaning_tasks
-      WHERE pm_user_id = ${pmUserId} AND cleaner_user_id IS NOT NULL
-      ORDER BY cleaner_user_id LIMIT 1
-    `);
-    const cleanerUserId = (cleanerResult.rows[0] as any)?.cleaner_user_id || null;
-
-    await db.execute(sql`
-      INSERT INTO cleaning_tasks (id, property_id, pm_user_id, cleaner_user_id, checklist_id, booking_id, title, due_at, status, created_by)
-      VALUES (${taskId}, ${propertyId}, ${pmUserId}, ${cleanerUserId}, ${rule.checklist_id}, ${bookingId},
-        ${'Post-checkout cleaning: ' + rule.checklist_name}, ${dueAt.toISOString()}, 'pending', ${pmUserId})
+  try {
+    const rules = await db.execute(sql`
+      SELECT r.id, r.checklist_id, r.delay_minutes,
+        c.name AS checklist_name
+      FROM cleaning_automation_rules r
+      JOIN cleaning_checklists c ON c.id = r.checklist_id
+      WHERE r.property_id = ${propertyId} AND r.pm_user_id = ${pmUserId} AND r.is_active = true
     `);
 
-    // Copy checklist items
-    const items = await db.execute(sql`
-      SELECT label, display_order FROM cleaning_checklist_items WHERE checklist_id = ${rule.checklist_id} ORDER BY display_order
-    `);
-    for (const item of items.rows as any[]) {
-      await db.execute(sql`
-        INSERT INTO cleaning_task_items (id, task_id, label, display_order)
-        VALUES (gen_random_uuid()::text, ${taskId}, ${item.label}, ${item.display_order})
+    for (const rule of rules.rows as any[]) {
+      const checklistId = rule.checklist_id;
+      if (!checklistId) continue;
+
+      const dueAt = new Date(Date.now() + rule.delay_minutes * 60 * 1000);
+      const taskId = crypto.randomUUID();
+
+      // Find first available cleaner (most recent one assigned to this PM's tasks)
+      const cleanerResult = await db.execute(sql`
+        SELECT DISTINCT cleaner_user_id FROM cleaning_tasks
+        WHERE pm_user_id = ${pmUserId} AND cleaner_user_id IS NOT NULL
+        ORDER BY cleaner_user_id LIMIT 1
       `);
-    }
+      const cleanerUserId = (cleanerResult.rows[0] as any)?.cleaner_user_id || null;
 
-    // Notify cleaner
-    if (cleanerUserId) {
-      await createNotification({
-        userId: cleanerUserId,
-        type: "BOOKING_REQUESTED",
-        title: "Auto-assigned cleaning task",
-        body: `Post-checkout cleaning task for ${rule.checklist_name}. Due in ${rule.delay_minutes} minutes.`,
-        linkUrl: "/portal/cleaner-tasks",
-        relatedId: taskId,
-      });
+      await db.execute(sql`
+        INSERT INTO cleaning_tasks (id, property_id, pm_user_id, cleaner_user_id, checklist_id, booking_id, title, due_at, status, created_by)
+        VALUES (${taskId}, ${propertyId}, ${pmUserId}, ${cleanerUserId}, ${checklistId}, ${bookingId},
+          ${'Post-checkout cleaning: ' + rule.checklist_name}, ${dueAt.toISOString()}, 'pending', ${pmUserId})
+      `);
+
+      // Copy checklist items into task items
+      const items = await db.execute(sql`
+        SELECT label, display_order FROM cleaning_checklist_items WHERE checklist_id = ${checklistId} ORDER BY display_order
+      `);
+      for (const item of items.rows as any[]) {
+        await db.execute(sql`
+          INSERT INTO cleaning_task_items (id, task_id, label, display_order)
+          VALUES (gen_random_uuid()::text, ${taskId}, ${item.label}, ${item.display_order})
+        `);
+      }
+
+      // Notify cleaner
+      if (cleanerUserId) {
+        await createNotification({
+          userId: cleanerUserId,
+          type: "BOOKING_CHECKOUT",
+          title: "Auto-assigned cleaning task",
+          body: `Post-checkout cleaning task for ${rule.checklist_name}. Due in ${rule.delay_minutes} minutes.`,
+          linkUrl: "/portal/cleaner-tasks",
+          relatedId: taskId,
+        });
+      }
     }
+  } catch (error: any) {
+    console.error("[Cleaners] triggerCleaningAutomation error:", error);
   }
 }
 

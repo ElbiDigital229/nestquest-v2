@@ -136,6 +136,9 @@ router.get("/", requirePmPermission("properties.view"), async (req: Request, res
 
 router.post("/", requirePmPermission("properties.create"), async (req: Request, res: Response) => {
   try {
+    if (!isPM(req)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
     const pmId = await resolvePmId(req);
     const actorId = req.session.userId!;
 
@@ -281,7 +284,7 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
     // Get settlements where user is either from or to
     const result = await db.execute(sql`
       SELECT
-        s.id, s.booking_id AS "bookingId", s.property_id AS "propertyId",
+        s.id, s.booking_id AS "bookingId", s.expense_id AS "expenseId", s.property_id AS "propertyId",
         s.from_user_id AS "fromUserId", s.to_user_id AS "toUserId",
         s.amount, s.reason, s.payment_method_used AS "paymentMethodUsed",
         s.collected_by AS "collectedBy", s.status, s.notes,
@@ -293,10 +296,12 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
         to_g.full_name AS "toName",
         b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
         b.total_amount AS "bookingTotal",
-        COALESCE(guest_g.full_name, b.guest_name, 'Guest') AS "guestName"
+        COALESCE(guest_g.full_name, b.guest_name, e.description, 'N/A') AS "guestName",
+        e.category AS "expenseCategory", e.description AS "expenseDescription"
       FROM pm_po_settlements s
       JOIN st_properties p ON p.id = s.property_id
-      JOIN st_bookings b ON b.id = s.booking_id
+      LEFT JOIN st_bookings b ON b.id = s.booking_id
+      LEFT JOIN st_property_expenses e ON e.id = s.expense_id
       LEFT JOIN guests from_g ON from_g.user_id = s.from_user_id
       LEFT JOIN guests to_g ON to_g.user_id = s.to_user_id
       LEFT JOIN guests guest_g ON guest_g.user_id = b.guest_user_id
@@ -345,12 +350,12 @@ router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), a
     const resolvedId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
 
     const result = await db.execute(sql`
-      SELECT * FROM pm_po_settlements WHERE id = ${id} AND from_user_id = ${resolvedId} AND status = 'pending'
+      SELECT * FROM pm_po_settlements WHERE id = ${id} AND (from_user_id = ${resolvedId} OR to_user_id = ${resolvedId}) AND status = 'pending'
     `);
     if (result.rows.length === 0) return res.status(404).json({ error: "Settlement not found" });
 
     await db.execute(sql`
-      UPDATE pm_po_settlements SET status = 'paid', paid_at = NOW(), notes = ${notes || null}, proof_url = ${proofUrl || null}, updated_at = NOW()
+      UPDATE pm_po_settlements SET status = 'confirmed', paid_at = NOW(), confirmed_at = NOW(), notes = ${notes || null}, proof_url = ${proofUrl || null}, updated_at = NOW()
       WHERE id = ${id}
     `);
 
@@ -1286,6 +1291,9 @@ router.get("/:id/expenses", async (req: Request, res: Response) => {
     const expResult = await db.execute(
       sql`SELECT id, property_id AS "propertyId", category, description, amount,
           expense_date AS "expenseDate", receipt_url AS "receiptUrl",
+          bill_image_url AS "billImageUrl", payment_status AS "paymentStatus",
+          paid_date AS "paidDate", payment_proof_url AS "paymentProofUrl",
+          responsible_party AS "responsibleParty", paid_by AS "paidBy", notes,
           created_at AS "createdAt", updated_at AS "updatedAt"
           FROM st_property_expenses WHERE property_id = ${id} ORDER BY expense_date DESC`
     );
@@ -1383,8 +1391,18 @@ router.get("/:id/investment-summary", requirePmPermission("financials.view"), as
     `);
     const deposits = (depositResult.rows[0] || {}) as any;
 
+    // Inventory value
+    const inventoryResult = await db.execute(sql`
+      SELECT COALESCE(SUM(quantity * unit_cost::decimal), 0) AS "inventoryValue"
+      FROM st_property_inventory WHERE property_id = ${id}
+    `);
+    const inventoryValue = parseFloat((inventoryResult.rows[0] as any)?.inventoryValue || "0");
+
     const totalIncome = parseFloat(income.totalIncome || "0");
-    const netProfit = totalIncome - totalExpenses;
+    const totalCommission = parseFloat(income.totalCommission || "0");
+    // Net profit = Revenue - Commission - Inventory - Expenses
+    const totalCosts = totalCommission + inventoryValue + totalExpenses;
+    const netProfit = totalIncome - totalCosts;
 
     return res.json({
       purchasePrice: acquisition?.purchasePrice || "0",
@@ -1392,15 +1410,17 @@ router.get("/:id/investment-summary", requirePmPermission("financials.view"), as
       acquisitionType: acquisition?.acquisitionType || null,
       totalExpenses: totalExpenses.toFixed(2),
       expenseCount,
-      totalInvestment: (purchasePrice + totalExpenses).toFixed(2),
+      inventoryValue: inventoryValue.toFixed(2),
+      totalInvestment: (purchasePrice + totalExpenses + inventoryValue).toFixed(2),
       categoryBreakdown,
       // Income (excludes security deposits)
       totalIncome: totalIncome.toFixed(2),
       bookingCount: income.bookingCount || 0,
       totalSubtotal: parseFloat(income.totalSubtotal || "0").toFixed(2),
       totalCleaningFees: parseFloat(income.totalCleaningFees || "0").toFixed(2),
-      totalCommission: parseFloat(income.totalCommission || "0").toFixed(2),
+      totalCommission: totalCommission.toFixed(2),
       totalOwnerPayout: parseFloat(income.totalOwnerPayout || "0").toFixed(2),
+      totalCosts: totalCosts.toFixed(2),
       netProfit: netProfit.toFixed(2),
       // Security deposits (separate from income)
       depositsCollected: parseFloat(deposits.totalCollected || "0").toFixed(2),
@@ -1575,6 +1595,316 @@ router.get("/:id/transactions", requirePmPermission("financials.view"), async (r
   }
 });
 
+// ══════════════════════════════════════════════════════
+// INVENTORY
+// ══════════════════════════════════════════════════════
+
+// List inventory for a property
+router.get("/:id/inventory", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT id, name, category, quantity, unit_cost AS "unitCost",
+        (quantity * unit_cost::decimal)::text AS "totalCost",
+        condition, purchase_date AS "purchaseDate", location, notes,
+        created_at AS "createdAt"
+      FROM st_property_inventory
+      WHERE property_id = ${id}
+      ORDER BY category, name
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Inventory summary (totals by category)
+router.get("/:id/inventory-summary", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS "totalItems",
+        COALESCE(SUM(quantity), 0)::int AS "totalQuantity",
+        COALESCE(SUM(quantity * unit_cost::decimal), 0) AS "totalValue",
+        json_agg(json_build_object(
+          'category', sub.category,
+          'itemCount', sub.item_count,
+          'totalQuantity', sub.total_qty,
+          'totalCost', sub.total_cost
+        )) AS "categoryBreakdown"
+      FROM st_property_inventory WHERE property_id = ${id}
+      CROSS JOIN LATERAL (
+        SELECT category,
+          COUNT(*)::int AS item_count,
+          SUM(quantity)::int AS total_qty,
+          SUM(quantity * unit_cost::decimal) AS total_cost
+        FROM st_property_inventory
+        WHERE property_id = ${id}
+        GROUP BY category
+        ORDER BY SUM(quantity * unit_cost::decimal) DESC
+      ) sub
+    `);
+
+    // Simpler approach — separate queries
+    const totals = await db.execute(sql`
+      SELECT
+        COUNT(*)::int AS "totalItems",
+        COALESCE(SUM(quantity), 0)::int AS "totalQuantity",
+        COALESCE(SUM(quantity * unit_cost::decimal), 0)::text AS "totalValue"
+      FROM st_property_inventory WHERE property_id = ${id}
+    `);
+
+    const categories = await db.execute(sql`
+      SELECT category,
+        COUNT(*)::int AS "itemCount",
+        SUM(quantity)::int AS "totalQuantity",
+        SUM(quantity * unit_cost::decimal)::text AS "totalCost"
+      FROM st_property_inventory
+      WHERE property_id = ${id}
+      GROUP BY category
+      ORDER BY SUM(quantity * unit_cost::decimal) DESC
+    `);
+
+    const conditions = await db.execute(sql`
+      SELECT condition,
+        COUNT(*)::int AS "count",
+        SUM(quantity)::int AS "totalQuantity"
+      FROM st_property_inventory
+      WHERE property_id = ${id}
+      GROUP BY condition
+    `);
+
+    return res.json({
+      ...(totals.rows[0] as any),
+      categoryBreakdown: categories.rows,
+      conditionBreakdown: conditions.rows,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Add inventory item
+router.post("/:id/inventory", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.session.userId!;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { name, category, quantity, unitCost, condition, purchaseDate, location, notes } = req.body;
+    if (!name?.trim() || !category) return res.status(400).json({ error: "Name and category are required" });
+
+    const itemId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO st_property_inventory (id, property_id, name, category, quantity, unit_cost, condition, purchase_date, location, notes, created_by)
+      VALUES (${itemId}, ${id}, ${name.trim()}, ${category}, ${quantity || 1}, ${String(unitCost || 0)}, ${condition || 'new'}, ${purchaseDate || null}, ${location || null}, ${notes || null}, ${userId})
+    `);
+
+    await logPropertyActivity(id, userId, "property_updated", `Inventory item added: ${name}`, { itemId, category, quantity, unitCost });
+
+    return res.status(201).json({ id: itemId });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Update inventory item
+router.patch("/:id/inventory/:itemId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id, itemId } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { name, category, quantity, unitCost, condition, purchaseDate, location, notes } = req.body;
+    const sets: string[] = ["updated_at = NOW()"];
+    if (name !== undefined) sets.push(`name = '${name.replace(/'/g, "''")}'`);
+    if (category !== undefined) sets.push(`category = '${category}'`);
+    if (quantity !== undefined) sets.push(`quantity = ${quantity}`);
+    if (unitCost !== undefined) sets.push(`unit_cost = '${unitCost}'`);
+    if (condition !== undefined) sets.push(`condition = '${condition}'`);
+    if (purchaseDate !== undefined) sets.push(`purchase_date = ${purchaseDate ? `'${purchaseDate}'` : 'NULL'}`);
+    if (location !== undefined) sets.push(`location = ${location ? `'${location.replace(/'/g, "''")}'` : 'NULL'}`);
+    if (notes !== undefined) sets.push(`notes = ${notes ? `'${notes.replace(/'/g, "''")}'` : 'NULL'}`);
+
+    await db.execute(sql.raw(`UPDATE st_property_inventory SET ${sets.join(", ")} WHERE id = '${itemId}' AND property_id = '${id}'`));
+    return res.json({ message: "Item updated" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete inventory item
+router.delete("/:id/inventory/:itemId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id, itemId } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    await db.execute(sql`DELETE FROM st_property_inventory WHERE id = ${itemId} AND property_id = ${id}`);
+    await logPropertyActivity(id, req.session.userId!, "property_updated", "Inventory item removed", { itemId });
+    return res.json({ message: "Item deleted" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+// CALENDAR & PRICING MANAGEMENT
+// ══════════════════════════════════════════════════════
+
+// GET /:id/calendar-pricing — Full calendar data (bookings + blocks + pricing)
+router.get("/:id/calendar-pricing", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { from, to } = req.query;
+    const startDate = (from as string) || new Date().toISOString().slice(0, 10);
+    const endDate = (to as string) || new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+
+    // Property defaults
+    const propResult = await db.execute(sql`
+      SELECT nightly_rate AS "nightlyRate", weekend_rate AS "weekendRate",
+        minimum_stay AS "minimumStay", cleaning_fee AS "cleaningFee"
+      FROM st_properties WHERE id = ${id}
+    `);
+    const defaults = propResult.rows[0] as any || {};
+
+    // Bookings in range
+    const bookings = await db.execute(sql`
+      SELECT b.id, b.status, b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
+        b.total_amount AS "totalAmount", b.number_of_guests AS "guests",
+        COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName",
+        b.source
+      FROM st_bookings b
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE b.property_id = ${id}
+        AND b.check_out_date >= ${startDate}
+        AND b.check_in_date <= ${endDate}
+        AND b.status IN ('requested', 'confirmed', 'checked_in', 'checked_out')
+      ORDER BY b.check_in_date
+    `);
+
+    // Blocked dates in range
+    const blocked = await db.execute(sql`
+      SELECT id, start_date AS "startDate", end_date AS "endDate", reason
+      FROM st_blocked_dates
+      WHERE property_id = ${id}
+        AND end_date >= ${startDate}
+        AND start_date <= ${endDate}
+    `);
+
+    // Custom pricing in range
+    const pricing = await db.execute(sql`
+      SELECT id, date, price, min_stay AS "minStay", notes
+      FROM st_property_pricing
+      WHERE property_id = ${id}
+        AND date >= ${startDate}
+        AND date <= ${endDate}
+      ORDER BY date
+    `);
+
+    return res.json({
+      defaults,
+      bookings: bookings.rows,
+      blocked: blocked.rows,
+      pricing: pricing.rows,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /:id/pricing — Bulk set prices for date range
+router.put("/:id/pricing", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { startDate, endDate, price, minStay, notes, weekdayPrice, weekendPrice } = req.body;
+    if (!startDate || !endDate) return res.status(400).json({ error: "Start and end dates required" });
+    if (!price && !weekdayPrice && !weekendPrice) return res.status(400).json({ error: "Price required" });
+
+    const start = new Date(startDate + "T00:00:00");
+    const end = new Date(endDate + "T00:00:00");
+    let count = 0;
+
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const dayOfWeek = d.getDay();
+      const isWeekend = dayOfWeek === 5 || dayOfWeek === 6; // Fri, Sat
+
+      let dayPrice = price;
+      if (weekdayPrice && weekendPrice) {
+        dayPrice = isWeekend ? weekendPrice : weekdayPrice;
+      } else if (weekendPrice && isWeekend) {
+        dayPrice = weekendPrice;
+      } else if (weekdayPrice && !isWeekend) {
+        dayPrice = weekdayPrice;
+      }
+
+      if (dayPrice) {
+        await db.execute(sql`
+          INSERT INTO st_property_pricing (id, property_id, date, price, min_stay, notes)
+          VALUES (gen_random_uuid()::text, ${id}, ${dateStr}, ${String(dayPrice)}, ${minStay || null}, ${notes || null})
+          ON CONFLICT (property_id, date) DO UPDATE SET price = ${String(dayPrice)}, min_stay = ${minStay || null}, notes = ${notes || null}, updated_at = NOW()
+        `);
+        count++;
+      }
+    }
+
+    await logPropertyActivity(id, req.session.userId!, "property_updated", `Bulk pricing set: ${count} days (${startDate} to ${endDate})`, { startDate, endDate, price, weekdayPrice, weekendPrice });
+
+    return res.json({ message: `Updated pricing for ${count} days` });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /:id/pricing — Reset pricing for date range to defaults
+router.delete("/:id/pricing", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { startDate, endDate } = req.body;
+    if (!startDate || !endDate) return res.status(400).json({ error: "Start and end dates required" });
+
+    await db.execute(sql`
+      DELETE FROM st_property_pricing
+      WHERE property_id = ${id} AND date >= ${startDate} AND date <= ${endDate}
+    `);
+
+    return res.json({ message: "Pricing reset to defaults" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH /:id/pricing/:date — Update single date price
+router.patch("/:id/pricing/:date", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id, date } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { price, minStay, notes } = req.body;
+    if (!price) return res.status(400).json({ error: "Price required" });
+
+    await db.execute(sql`
+      INSERT INTO st_property_pricing (id, property_id, date, price, min_stay, notes)
+      VALUES (gen_random_uuid()::text, ${id}, ${date}, ${String(price)}, ${minStay || null}, ${notes || null})
+      ON CONFLICT (property_id, date) DO UPDATE SET price = ${String(price)}, min_stay = ${minStay || null}, notes = ${notes || null}, updated_at = NOW()
+    `);
+
+    return res.json({ message: "Price updated" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // ── POST /:id/expenses — Add an expense ──
 
 router.post("/:id/expenses", async (req: Request, res: Response) => {
@@ -1591,20 +1921,42 @@ router.post("/:id/expenses", async (req: Request, res: Response) => {
     if (!prop) return res.status(404).json({ error: "Property not found" });
     if (prop.pmUserId !== pmId) return res.status(403).json({ error: "Forbidden" });
 
-    const { category, description, amount, expenseDate, receiptUrl } = req.body;
+    const { category, description, amount, expenseDate, receiptUrl, billImageUrl, paymentStatus, paidDate, paymentProofUrl, responsibleParty, paidBy, notes } = req.body;
     if (!category || !amount || !expenseDate) {
       return res.status(400).json({ error: "category, amount, and expenseDate are required" });
+    }
+    if (!responsibleParty) return res.status(400).json({ error: "Responsible party is required" });
+    if (!paidBy) return res.status(400).json({ error: "Paid by is required" });
+    if (!paymentStatus) return res.status(400).json({ error: "Payment status is required" });
+    if ((paymentStatus === "paid" || paymentStatus === "partial") && !paidDate) {
+      return res.status(400).json({ error: "Paid date is required when payment status is paid" });
     }
 
     const expId = crypto.randomUUID();
     const insertResult = await db.execute(
-      sql`INSERT INTO st_property_expenses (id, property_id, category, description, amount, expense_date, receipt_url, created_by_user_id, created_at, updated_at)
-          VALUES (${expId}, ${id}, ${sql.raw(`'${category}'::st_expense_category`)}, ${description || null}, ${String(amount)}, ${expenseDate}, ${receiptUrl || null}, ${userId}, NOW(), NOW())
-          RETURNING id, property_id AS "propertyId", category, description, amount, expense_date AS "expenseDate", receipt_url AS "receiptUrl", created_at AS "createdAt", updated_at AS "updatedAt"`
+      sql`INSERT INTO st_property_expenses (id, property_id, category, description, amount, expense_date, receipt_url, bill_image_url, payment_status, paid_date, payment_proof_url, responsible_party, paid_by, notes, created_by_user_id, created_at, updated_at)
+          VALUES (${expId}, ${id}, ${sql.raw(`'${category}'::st_expense_category`)}, ${description || null}, ${String(amount)}, ${expenseDate}, ${receiptUrl || null}, ${billImageUrl || null}, ${paymentStatus || 'unpaid'}, ${paidDate || null}, ${paymentProofUrl || null}, ${responsibleParty || null}, ${paidBy || null}, ${notes || null}, ${userId}, NOW(), NOW())
+          RETURNING *`
     );
     const expense = (insertResult.rows || [])[0];
 
     await logPropertyActivity(id, userId, "expense_added", `Expense added: ${category} — AED ${amount}`, { expenseId: expId, category, amount, description });
+
+    // Auto-create settlement when responsible party ≠ paid by
+    if (responsibleParty && paidBy && responsibleParty !== paidBy) {
+      const prop = await db.execute(sql`SELECT pm_user_id, po_user_id FROM st_properties WHERE id = ${id}`);
+      const p = prop.rows[0] as any;
+      if (p?.po_user_id) {
+        // Determine who owes whom
+        const fromUserId = responsibleParty === "property_owner" ? p.po_user_id : p.pm_user_id;
+        const toUserId = paidBy === "property_manager" ? p.pm_user_id : p.po_user_id;
+
+        await db.execute(sql`
+          INSERT INTO pm_po_settlements (id, property_id, expense_id, from_user_id, to_user_id, amount, reason, payment_method_used, collected_by, status, created_at, updated_at)
+          VALUES (gen_random_uuid()::text, ${id}, ${expId}, ${fromUserId}, ${toUserId}, ${String(amount)}, ${'expense_reimbursement'}, ${paymentStatus === 'paid' ? 'bank_transfer' : null}, ${paidBy}, 'pending', NOW(), NOW())
+        `);
+      }
+    }
 
     return res.status(201).json(expense);
   } catch (error: any) {
@@ -1625,16 +1977,23 @@ router.patch("/:id/expenses/:expenseId", async (req: Request, res: Response) => 
       .from(stProperties).where(eq(stProperties.id, id));
     if (!prop || prop.pmUserId !== userId) return res.status(403).json({ error: "Forbidden" });
 
-    const { category, description, amount, expenseDate, receiptUrl } = req.body;
+    const { category, description, amount, expenseDate, receiptUrl, billImageUrl, paymentStatus, paidDate, paymentProofUrl, responsibleParty, paidBy, notes } = req.body;
     const setClauses: string[] = ["updated_at = NOW()"];
     if (category !== undefined) setClauses.push(`category = '${category}'::st_expense_category`);
     if (description !== undefined) setClauses.push(`description = ${description === null ? 'NULL' : `'${description.replace(/'/g, "''")}'`}`);
     if (amount !== undefined) setClauses.push(`amount = '${String(amount)}'`);
     if (expenseDate !== undefined) setClauses.push(`expense_date = '${expenseDate}'`);
     if (receiptUrl !== undefined) setClauses.push(`receipt_url = ${receiptUrl === null ? 'NULL' : `'${receiptUrl}'`}`);
+    if (billImageUrl !== undefined) setClauses.push(`bill_image_url = ${billImageUrl === null ? 'NULL' : `'${billImageUrl}'`}`);
+    if (paymentStatus !== undefined) setClauses.push(`payment_status = '${paymentStatus}'`);
+    if (paidDate !== undefined) setClauses.push(`paid_date = ${paidDate === null ? 'NULL' : `'${paidDate}'`}`);
+    if (paymentProofUrl !== undefined) setClauses.push(`payment_proof_url = ${paymentProofUrl === null ? 'NULL' : `'${paymentProofUrl}'`}`);
+    if (responsibleParty !== undefined) setClauses.push(`responsible_party = ${responsibleParty === null ? 'NULL' : `'${responsibleParty}'`}`);
+    if (paidBy !== undefined) setClauses.push(`paid_by = ${paidBy === null ? 'NULL' : `'${paidBy}'`}`);
+    if (notes !== undefined) setClauses.push(`notes = ${notes === null ? 'NULL' : `'${notes.replace(/'/g, "''")}'`}`);
 
     const updateResult = await db.execute(
-      sql.raw(`UPDATE st_property_expenses SET ${setClauses.join(", ")} WHERE id = '${expenseId}' AND property_id = '${id}' RETURNING id, category, description, amount, expense_date AS "expenseDate", receipt_url AS "receiptUrl", updated_at AS "updatedAt"`)
+      sql.raw(`UPDATE st_property_expenses SET ${setClauses.join(", ")} WHERE id = '${expenseId}' AND property_id = '${id}' RETURNING *`)
     );
     const updated = (updateResult.rows || [])[0];
 

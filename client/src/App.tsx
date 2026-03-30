@@ -9,7 +9,9 @@ import PortalDocuments from "@/pages/portal/documents";
 import PortalReports from "@/pages/portal/reports";
 import PortalSettlements from "@/pages/portal/settlements";
 import PortalTeam from "@/pages/portal/team";
+import CalendarOverview from "@/pages/portal/calendar-overview";
 import CleanerOps from "@/pages/portal/cleaner-ops";
+import ReviewPage from "@/pages/portal/review";
 import CleanerTasks from "@/pages/portal/cleaner-tasks";
 import PortalMessages from "@/pages/portal/messages";
 import MyBookings from "@/pages/portal/my-bookings";
@@ -190,6 +192,22 @@ export default function App() {
         <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout>
             <PortalTeam />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/review/:bookingId">
+        {(params) => (
+          <ProtectedRoute roles={["GUEST", "PROPERTY_OWNER", "TENANT"]}>
+            <PortalLayout>
+              <ReviewPage bookingId={params.bookingId} />
+            </PortalLayout>
+          </ProtectedRoute>
+        )}
+      </Route>
+      <Route path="/portal/calendar">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout fullWidth>
+            <CalendarOverview />
           </PortalLayout>
         </ProtectedRoute>
       </Route>

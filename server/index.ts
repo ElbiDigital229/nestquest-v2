@@ -67,7 +67,9 @@ app.get("/api/health", (_req, res) => {
 
 // ── Static file serving for uploads ────────────────────
 
-app.use("/uploads", express.static(path.join(__dirname2, "uploads")));
+const uploadsPath = path.join(__dirname2, "uploads");
+app.use("/uploads", express.static(uploadsPath));
+console.log("Uploads serving from:", uploadsPath);
 
 // ── Billing Guard (before routes, after session) ──────
 

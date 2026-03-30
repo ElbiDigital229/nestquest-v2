@@ -79,13 +79,22 @@ export default function HomePage() {
   return (
     <PublicLayout>
       {/* Hero */}
-      <section className="relative bg-gradient-to-br from-primary/10 via-background to-primary/5 py-20 md:py-32">
-        <div className="container max-w-7xl mx-auto px-4">
+      <section className="relative min-h-[500px] py-20 md:py-32 overflow-hidden">
+        {/* Background image */}
+        <div className="absolute inset-0 z-0">
+          <img
+            src="/uploads/hero-dubai.jpg"
+            alt=""
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/30 to-background/80" />
+        </div>
+        <div className="container max-w-7xl mx-auto px-4 relative z-10">
           <div className="max-w-3xl mx-auto text-center mb-10">
-            <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-4">
+            <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-4 text-white drop-shadow-lg">
               Find Your Perfect Stay
             </h1>
-            <p className="text-lg text-muted-foreground">
+            <p className="text-lg text-white/80 drop-shadow">
               Discover premium short-term rental properties across the UAE
             </p>
           </div>

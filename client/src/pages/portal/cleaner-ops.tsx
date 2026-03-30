@@ -45,7 +45,8 @@ export default function CleanerOps() {
   // Forms
   const [cleanerForm, setCleanerForm] = useState({ email: "", fullName: "", phone: "", password: "" });
   const [checklistForm, setChecklistForm] = useState({ name: "", propertyId: "", items: [""] });
-  const [taskForm, setTaskForm] = useState({ propertyId: "", cleanerUserId: "", checklistId: "", title: "", notes: "", priority: "normal" });
+  const [taskForm, setTaskForm] = useState({ propertyId: "", cleanerUserId: "", checklistId: "", title: "", notes: "", priority: "normal", dueAt: "" });
+  const [customItems, setCustomItems] = useState<string[]>([]);
   const [ruleForm, setRuleForm] = useState({ propertyId: "", checklistId: "", delayMinutes: "30" });
 
   // Queries
@@ -69,8 +70,8 @@ export default function CleanerOps() {
   });
 
   const createTaskMut = useMutation({
-    mutationFn: () => api.post("/cleaners/tasks", taskForm),
-    onSuccess: () => { toast({ title: "Task assigned" }); queryClient.invalidateQueries({ queryKey: ["/cleaners/tasks"] }); setCreateTaskOpen(false); setTaskForm({ propertyId: "", cleanerUserId: "", checklistId: "", title: "", notes: "", priority: "normal" }); },
+    mutationFn: () => api.post("/cleaners/tasks", { ...taskForm, dueAt: taskForm.dueAt || null, customItems: customItems.filter(i => i.trim()) }),
+    onSuccess: () => { toast({ title: "Task assigned" }); queryClient.invalidateQueries({ queryKey: ["/cleaners/tasks"] }); setCreateTaskOpen(false); setTaskForm({ propertyId: "", cleanerUserId: "", checklistId: "", title: "", notes: "", priority: "normal", dueAt: "" }); setCustomItems([]); },
     onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
   });
 
@@ -335,8 +336,10 @@ export default function CleanerOps() {
                 <SelectContent>{cleaners.map((c: any) => <SelectItem key={c.id} value={c.id}>{c.email}</SelectItem>)}</SelectContent>
               </Select>
             </div>
+            <Separator />
+            <p className="text-xs font-semibold text-muted-foreground">TASK ITEMS — use a checklist template, add custom items, or both</p>
             <div className="space-y-1.5">
-              <Label>Checklist (optional)</Label>
+              <Label>Checklist Template</Label>
               <Select value={taskForm.checklistId || "none"} onValueChange={v => setTaskForm(f => ({ ...f, checklistId: v === "none" ? "" : v }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -345,11 +348,28 @@ export default function CleanerOps() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label>Custom Items</Label>
+              {customItems.map((item, i) => (
+                <div key={i} className="flex gap-2">
+                  <Input value={item} onChange={e => { const items = [...customItems]; items[i] = e.target.value; setCustomItems(items); }} placeholder={`Item ${i + 1}`} />
+                  <Button variant="ghost" size="icon" className="h-10 w-10 shrink-0 text-destructive" onClick={() => setCustomItems(customItems.filter((_, j) => j !== i))}>
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+              <Button variant="outline" size="sm" onClick={() => setCustomItems([...customItems, ""])}><Plus className="h-4 w-4 mr-1" /> Add Item</Button>
+            </div>
+            <Separator />
+            <div className="space-y-1.5">
+              <Label>Due Date <span className="text-destructive">*</span></Label>
+              <Input type="datetime-local" value={taskForm.dueAt} onChange={e => setTaskForm(f => ({ ...f, dueAt: e.target.value }))} />
+            </div>
             <div className="space-y-1.5"><Label>Notes</Label><Textarea value={taskForm.notes} onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))} rows={2} /></div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateTaskOpen(false)}>Cancel</Button>
-            <Button disabled={createTaskMut.isPending || !taskForm.title || !taskForm.propertyId || !taskForm.cleanerUserId} onClick={() => createTaskMut.mutate()}>
+            <Button disabled={createTaskMut.isPending || !taskForm.title || !taskForm.propertyId || !taskForm.cleanerUserId || !taskForm.dueAt} onClick={() => createTaskMut.mutate()}>
               {createTaskMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Assign
             </Button>
           </DialogFooter>

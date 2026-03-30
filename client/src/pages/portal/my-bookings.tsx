@@ -417,7 +417,7 @@ export default function MyBookings() {
                     </span>
                   )}
 
-                  {booking.status === "completed" && (
+                  {(booking.status === "completed" || booking.status === "checked_out") && !(booking as any).reviewId && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -426,6 +426,11 @@ export default function MyBookings() {
                       <Star className="h-4 w-4 mr-1" />
                       Leave Review
                     </Button>
+                  )}
+                  {(booking as any).reviewId && (
+                    <span className="text-xs text-green-600 flex items-center gap-1">
+                      <Star className="h-3 w-3 fill-current" /> Reviewed
+                    </span>
                   )}
 
                   {booking.status === "cancelled" && (
@@ -627,6 +632,11 @@ export default function MyBookings() {
                 </>
               )}
 
+              {/* Review */}
+              {(detail.status === "checked_out" || detail.status === "completed") && (
+                <ReviewInBooking bookingId={detail.id} />
+              )}
+
               {/* Special requests */}
               {detail.specialRequests && (
                 <>
@@ -738,5 +748,37 @@ export default function MyBookings() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ── Review snippet inside booking detail ──
+function ReviewInBooking({ bookingId }: { bookingId: string }) {
+  const { data: review } = useQuery<any>({
+    queryKey: ["/bookings", bookingId, "review"],
+    queryFn: () => api.get(`/bookings/${bookingId}/review`).catch(() => null),
+  });
+
+  if (!review) return null;
+
+  return (
+    <>
+      <Separator />
+      <div className="text-sm">
+        <h4 className="font-semibold mb-2">Your Review</h4>
+        <div className="flex gap-0.5 mb-1">
+          {[1, 2, 3, 4, 5].map(i => (
+            <Star key={i} className={`h-4 w-4 ${i <= review.rating ? "text-yellow-500 fill-yellow-500" : "text-gray-300"}`} />
+          ))}
+        </div>
+        {review.title && <p className="font-medium">{review.title}</p>}
+        {review.description && <p className="text-muted-foreground mt-1">{review.description}</p>}
+        {review.pm_response && (
+          <div className="mt-2 bg-muted/50 rounded p-2">
+            <p className="text-xs font-semibold text-muted-foreground">PM Response</p>
+            <p className="mt-0.5">{review.pm_response}</p>
+          </div>
+        )}
+      </div>
+    </>
   );
 }

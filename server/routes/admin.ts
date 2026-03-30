@@ -909,4 +909,145 @@ router.get("/st-properties/:id", async (req: Request, res: Response) => {
   }
 });
 
+// ══════════════════════════════════════════════════════
+// BOOKINGS, REVIEWS & TRANSACTIONS (Admin view)
+// ══════════════════════════════════════════════════════
+
+// All bookings across the platform
+router.get("/bookings", async (req: Request, res: Response) => {
+  try {
+    const { status, propertyId } = req.query;
+    let statusFilter = sql``;
+    if (status && status !== "all") statusFilter = sql` AND b.status = ${status as string}`;
+    let propFilter = sql``;
+    if (propertyId) propFilter = sql` AND b.property_id = ${propertyId as string}`;
+
+    const result = await db.execute(sql`
+      SELECT b.id, b.status, b.source,
+        b.check_in_date AS "checkInDate", b.check_out_date AS "checkOutDate",
+        b.number_of_guests AS "numberOfGuests", b.total_nights AS "totalNights",
+        b.total_amount AS "totalAmount", b.security_deposit_amount AS "securityDepositAmount",
+        b.commission_amount AS "commissionAmount", b.owner_payout_amount AS "ownerPayoutAmount",
+        b.payment_method AS "paymentMethod", b.payment_status AS "paymentStatus",
+        b.created_at AS "createdAt",
+        p.public_name AS "propertyName", p.city AS "propertyCity",
+        COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName",
+        u.email AS "guestEmail",
+        pm_g.full_name AS "pmName"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users u ON u.id = b.guest_user_id
+      LEFT JOIN guests pm_g ON pm_g.user_id = b.pm_user_id
+      WHERE 1=1 ${statusFilter} ${propFilter}
+      ORDER BY b.created_at DESC
+      LIMIT 100
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Booking detail
+router.get("/bookings/:id", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT b.*,
+        p.public_name AS "propertyName", p.city AS "propertyCity", p.property_type AS "propertyType",
+        COALESCE(g.full_name, b.guest_name) AS "guestName",
+        u.email AS "guestEmail", u.phone AS "guestPhone",
+        pm_g.full_name AS "pmName", pm_u.email AS "pmEmail",
+        po_g.full_name AS "ownerName"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users u ON u.id = b.guest_user_id
+      LEFT JOIN guests pm_g ON pm_g.user_id = b.pm_user_id
+      LEFT JOIN users pm_u ON pm_u.id = b.pm_user_id
+      LEFT JOIN guests po_g ON po_g.user_id = p.po_user_id
+      WHERE b.id = ${id}
+    `);
+    if (result.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+    return res.json(result.rows[0]);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// All reviews across the platform
+router.get("/reviews", async (req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT r.id, r.rating, r.title, r.description, r.pm_response AS "pmResponse",
+        r.created_at AS "createdAt",
+        p.public_name AS "propertyName",
+        g.full_name AS "guestName",
+        u.email AS "guestEmail",
+        pm_g.full_name AS "pmName"
+      FROM st_reviews r
+      JOIN st_properties p ON p.id = r.property_id
+      LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      LEFT JOIN users u ON u.id = r.guest_user_id
+      LEFT JOIN guests pm_g ON pm_g.user_id = p.pm_user_id
+      ORDER BY r.created_at DESC
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// All settlements across the platform
+router.get("/settlements", async (req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT s.id, s.amount, s.reason, s.status,
+        s.paid_at AS "paidAt", s.confirmed_at AS "confirmedAt",
+        s.created_at AS "createdAt",
+        p.public_name AS "propertyName",
+        from_g.full_name AS "fromName",
+        to_g.full_name AS "toName",
+        e.description AS "expenseDescription",
+        COALESCE(guest_g.full_name, b.guest_name) AS "guestName"
+      FROM pm_po_settlements s
+      JOIN st_properties p ON p.id = s.property_id
+      LEFT JOIN st_bookings b ON b.id = s.booking_id
+      LEFT JOIN st_property_expenses e ON e.id = s.expense_id
+      LEFT JOIN guests from_g ON from_g.user_id = s.from_user_id
+      LEFT JOIN guests to_g ON to_g.user_id = s.to_user_id
+      LEFT JOIN guests guest_g ON guest_g.user_id = b.guest_user_id
+      ORDER BY s.created_at DESC
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// All properties across the platform
+router.get("/properties", async (req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT p.id, p.public_name AS "publicName", p.status, p.city,
+        p.property_type AS "propertyType", p.bedrooms, p.bathrooms,
+        p.nightly_rate AS "nightlyRate",
+        pm_g.full_name AS "pmName", pm_u.email AS "pmEmail",
+        po_g.full_name AS "ownerName",
+        (SELECT COUNT(*)::int FROM st_bookings b WHERE b.property_id = p.id) AS "bookingCount",
+        (SELECT COUNT(*)::int FROM st_reviews r WHERE r.property_id = p.id) AS "reviewCount",
+        (SELECT COALESCE(AVG(r.rating), 0) FROM st_reviews r WHERE r.property_id = p.id) AS "avgRating"
+      FROM st_properties p
+      LEFT JOIN guests pm_g ON pm_g.user_id = p.pm_user_id
+      LEFT JOIN users pm_u ON pm_u.id = p.pm_user_id
+      LEFT JOIN guests po_g ON po_g.user_id = p.po_user_id
+      ORDER BY p.created_at DESC
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

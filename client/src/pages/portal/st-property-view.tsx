@@ -37,6 +37,8 @@ import {
   X,
   ExternalLink,
   TrendingUp,
+  Package,
+  Star,
   Plus,
   Trash2,
   Edit3,
@@ -63,6 +65,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -150,9 +153,12 @@ const TABS = [
   { key: "policies", name: "Policies", icon: ShieldCheck },
   { key: "owner", name: "Property Owner", icon: Users },
   { key: "agreement", name: "Agreement", icon: ClipboardCheck },
+  { key: "inventory", name: "Inventory", icon: Package },
   { key: "investment", name: "Investment", icon: TrendingUp },
+  { key: "calendar", name: "Calendar & Pricing", icon: CalendarDays },
   { key: "bookings", name: "Bookings", icon: CalendarDays },
   { key: "transactions", name: "Transactions", icon: Receipt },
+  { key: "reviews", name: "Reviews", icon: Star },
   { key: "activity", name: "Activity Log", icon: Activity },
 ] as const;
 
@@ -340,9 +346,12 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "policies" && <ViewPolicies property={property} />}
           {activeTab === "owner" && <ViewOwner property={property} />}
           {activeTab === "agreement" && <ViewAgreement property={property} />}
+          {activeTab === "inventory" && <ViewInventory property={property} />}
           {activeTab === "investment" && <ViewInvestment property={property} />}
+          {activeTab === "calendar" && <ViewCalendarPricing property={property} />}
           {activeTab === "bookings" && <ViewBookings property={property} />}
           {activeTab === "transactions" && <ViewTransactions property={property} />}
+          {activeTab === "reviews" && <ViewReviews property={property} />}
           {activeTab === "activity" && <ViewActivity property={property} />}
         </div>
       </div>
@@ -922,6 +931,13 @@ interface ExpenseFormData {
   amount: string;
   expenseDate: string;
   receiptUrl: string;
+  billImageUrl: string;
+  paymentStatus: string;
+  paidDate: string;
+  paymentProofUrl: string;
+  responsibleParty: string;
+  paidBy: string;
+  notes: string;
 }
 
 function ExpenseDialog({
@@ -942,7 +958,26 @@ function ExpenseDialog({
     amount: editExpense?.amount || "",
     expenseDate: editExpense?.expenseDate || new Date().toISOString().split("T")[0],
     receiptUrl: editExpense?.receiptUrl || "",
+    billImageUrl: editExpense?.billImageUrl || "",
+    paymentStatus: editExpense?.paymentStatus || "unpaid",
+    paidDate: editExpense?.paidDate?.slice?.(0, 10) || "",
+    paymentProofUrl: editExpense?.paymentProofUrl || "",
+    responsibleParty: editExpense?.responsibleParty || "",
+    paidBy: editExpense?.paidBy || "",
+    notes: editExpense?.notes || "",
   });
+  const [uploading, setUploading] = useState<string | null>(null);
+
+  const uploadFile = async (field: "billImageUrl" | "paymentProofUrl", file: File) => {
+    setUploading(field);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: fd, credentials: "include" });
+      const data = await res.json();
+      if (data.url) setForm(f => ({ ...f, [field]: data.url }));
+    } catch {} finally { setUploading(null); }
+  };
 
   const mutation = useMutation({
     mutationFn: (data: ExpenseFormData) => {
@@ -954,58 +989,133 @@ function ExpenseDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/st-properties/${propertyId}/expenses`] });
       queryClient.invalidateQueries({ queryKey: [`/st-properties/${propertyId}/investment-summary`] });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${propertyId}/transactions`] });
       onClose();
     },
   });
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{editExpense ? "Edit Expense" : "Add Expense"}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 pt-2">
-          <div>
-            <Label>Category *</Label>
-            <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
-              <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
-              <SelectContent>
-                {EXPENSE_CATEGORIES.map((c) => (
-                  <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {/* Row 1: Category + Amount */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Category <span className="text-destructive">*</span></Label>
+              <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
+                <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                <SelectContent>
+                  {EXPENSE_CATEGORIES.map((c) => (
+                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Amount (AED) <span className="text-destructive">*</span></Label>
+              <Input type="number" placeholder="0.00" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+            </div>
           </div>
+
+          {/* Row 2: Date + Description */}
           <div>
-            <Label>Amount (AED) *</Label>
-            <Input
-              type="number"
-              placeholder="0.00"
-              value={form.amount}
-              onChange={(e) => setForm({ ...form, amount: e.target.value })}
-            />
-          </div>
-          <div>
-            <Label>Date *</Label>
-            <Input
-              type="date"
-              value={form.expenseDate}
-              onChange={(e) => setForm({ ...form, expenseDate: e.target.value })}
-            />
+            <Label>Expense Date <span className="text-destructive">*</span></Label>
+            <Input type="date" value={form.expenseDate} onChange={(e) => setForm({ ...form, expenseDate: e.target.value })} />
           </div>
           <div>
             <Label>Description</Label>
-            <Textarea
-              placeholder="Brief description of the expense..."
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              rows={2}
-            />
+            <Textarea placeholder="Brief description..." value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} />
           </div>
+
+          {/* Bill Image */}
+          <div>
+            <Label>Bill / Invoice Image</Label>
+            <div className="flex items-center gap-3">
+              <input type="file" accept="image/*,.pdf" className="text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary file:text-primary-foreground file:cursor-pointer"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile("billImageUrl", f); }} />
+              {uploading === "billImageUrl" && <Loader2 className="h-4 w-4 animate-spin" />}
+            </div>
+            {form.billImageUrl && <img src={form.billImageUrl} alt="Bill" className="mt-2 max-h-24 rounded border" />}
+          </div>
+
+          <Separator />
+
+          {/* Responsibility */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Responsible Party <span className="text-destructive">*</span></Label>
+              <Select value={form.responsibleParty || "none"} onValueChange={(v) => setForm({ ...form, responsibleParty: v === "none" ? "" : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not specified</SelectItem>
+                  <SelectItem value="property_manager">Property Manager</SelectItem>
+                  <SelectItem value="property_owner">Property Owner</SelectItem>
+                  <SelectItem value="shared">Shared</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Paid By <span className="text-destructive">*</span></Label>
+              <Select value={form.paidBy || "none"} onValueChange={(v) => setForm({ ...form, paidBy: v === "none" ? "" : v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Not specified</SelectItem>
+                  <SelectItem value="property_manager">Property Manager</SelectItem>
+                  <SelectItem value="property_owner">Property Owner</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Payment Status */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label>Payment Status <span className="text-destructive">*</span></Label>
+              <Select value={form.paymentStatus} onValueChange={(v) => setForm({ ...form, paymentStatus: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unpaid">Unpaid</SelectItem>
+                  <SelectItem value="paid">Paid</SelectItem>
+                  <SelectItem value="partial">Partially Paid</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(form.paymentStatus === "paid" || form.paymentStatus === "partial") && (
+              <div>
+                <Label>Paid Date <span className="text-destructive">*</span></Label>
+                <Input type="date" value={form.paidDate} onChange={(e) => setForm({ ...form, paidDate: e.target.value })} />
+              </div>
+            )}
+          </div>
+
+          {/* Payment Proof */}
+          {(form.paymentStatus === "paid" || form.paymentStatus === "partial") && (
+            <div>
+              <Label>Payment Proof</Label>
+              <div className="flex items-center gap-3">
+                <input type="file" accept="image/*,.pdf" className="text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary file:text-primary-foreground file:cursor-pointer"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile("paymentProofUrl", f); }} />
+                {uploading === "paymentProofUrl" && <Loader2 className="h-4 w-4 animate-spin" />}
+              </div>
+              {form.paymentProofUrl && <img src={form.paymentProofUrl} alt="Proof" className="mt-2 max-h-24 rounded border" />}
+            </div>
+          )}
+
+          {/* Notes */}
+          <div>
+            <Label>Notes</Label>
+            <Textarea placeholder="Additional notes..." value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} />
+          </div>
+
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={onClose}>Cancel</Button>
             <Button
-              disabled={!form.category || !form.amount || !form.expenseDate || mutation.isPending}
+              disabled={!form.category || !form.amount || !form.expenseDate || !form.responsibleParty || !form.paidBy || !form.paymentStatus || ((form.paymentStatus === "paid" || form.paymentStatus === "partial") && !form.paidDate) || mutation.isPending}
               onClick={() => mutation.mutate(form)}
             >
               {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
@@ -1020,6 +1130,263 @@ function ExpenseDialog({
     </Dialog>
   );
 }
+
+// ─── Tab: Inventory ──────────────────────────────────────────────────────────
+
+const INVENTORY_CATEGORIES = [
+  "Furniture", "Electronics", "Appliances", "Kitchenware", "Linens & Towels",
+  "Decor", "Bathroom", "Outdoor", "Safety Equipment", "Other",
+];
+
+const INVENTORY_CONDITIONS = ["New", "Good", "Fair", "Poor", "Damaged"];
+
+const INVENTORY_LOCATIONS = [
+  "Living Room", "Master Bedroom", "Guest Bedroom", "Kitchen",
+  "Bathroom", "Balcony", "Storage", "Hallway", "Maid Room",
+];
+
+const INV_CATEGORY_COLORS: Record<string, string> = {
+  Furniture: "bg-blue-100 text-blue-800",
+  Electronics: "bg-purple-100 text-purple-800",
+  Appliances: "bg-orange-100 text-orange-800",
+  Kitchenware: "bg-amber-100 text-amber-800",
+  "Linens & Towels": "bg-teal-100 text-teal-800",
+  Decor: "bg-pink-100 text-pink-800",
+  Bathroom: "bg-cyan-100 text-cyan-800",
+  Outdoor: "bg-green-100 text-green-800",
+  "Safety Equipment": "bg-red-100 text-red-800",
+  Other: "bg-gray-100 text-gray-800",
+};
+
+function ViewInventory({ property }: { property: StPropertyData }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [addOpen, setAddOpen] = useState(false);
+  const [editItem, setEditItem] = useState<any>(null);
+  const [filterCat, setFilterCat] = useState("all");
+  const [form, setForm] = useState({
+    name: "", category: "Furniture", quantity: "1", unitCost: "", condition: "New",
+    purchaseDate: "", location: "", notes: "",
+  });
+
+  const { data: items = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${property.id}/inventory`],
+    queryFn: () => api.get(`/st-properties/${property.id}/inventory`),
+  });
+
+  const { data: summary } = useQuery<any>({
+    queryKey: [`/st-properties/${property.id}/inventory-summary`],
+    queryFn: () => api.get(`/st-properties/${property.id}/inventory-summary`),
+  });
+
+  const addMut = useMutation({
+    mutationFn: (data: any) => editItem
+      ? api.patch(`/st-properties/${property.id}/inventory/${editItem.id}`, data)
+      : api.post(`/st-properties/${property.id}/inventory`, data),
+    onSuccess: () => {
+      toast({ title: editItem ? "Item updated" : "Item added" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/inventory`] });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/inventory-summary`] });
+      setAddOpen(false); setEditItem(null);
+      setForm({ name: "", category: "Furniture", quantity: "1", unitCost: "", condition: "New", purchaseDate: "", location: "", notes: "" });
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (itemId: string) => api.delete(`/st-properties/${property.id}/inventory/${itemId}`),
+    onSuccess: () => {
+      toast({ title: "Item removed" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/inventory`] });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/inventory-summary`] });
+    },
+  });
+
+  const openEdit = (item: any) => {
+    setForm({
+      name: item.name, category: item.category, quantity: String(item.quantity),
+      unitCost: item.unitCost, condition: item.condition,
+      purchaseDate: item.purchaseDate ? item.purchaseDate.slice(0, 10) : "",
+      location: item.location || "", notes: item.notes || "",
+    });
+    setEditItem(item);
+    setAddOpen(true);
+  };
+
+  const filtered = filterCat === "all" ? items : items.filter(i => i.category === filterCat);
+  const totalValue = parseFloat(summary?.totalValue || "0");
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <Package className="h-5 w-5 text-primary" />
+          <h3 className="text-lg font-semibold">Inventory</h3>
+        </div>
+        <Button size="sm" onClick={() => { setEditItem(null); setForm({ name: "", category: "Furniture", quantity: "1", unitCost: "", condition: "New", purchaseDate: "", location: "", notes: "" }); setAddOpen(true); }}>
+          <Plus className="h-4 w-4 mr-1" /> Add Item
+        </Button>
+      </div>
+      <Separator className="mb-6" />
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-blue-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Inventory Value</p>
+          <p className="text-xl font-bold text-blue-700">{formatCurrency(summary?.totalValue)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-emerald-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Items</p>
+          <p className="text-xl font-bold text-emerald-700">{summary?.totalItems || 0} items ({summary?.totalQuantity || 0} units)</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Categories</p>
+          <p className="text-xl font-bold text-purple-700">{summary?.categoryBreakdown?.length || 0}</p>
+        </div>
+      </div>
+
+      {/* Category Breakdown */}
+      {summary?.categoryBreakdown?.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-6">
+          {summary.categoryBreakdown.map((cat: any) => {
+            const pct = totalValue > 0 ? ((parseFloat(cat.totalCost) / totalValue) * 100).toFixed(0) : "0";
+            return (
+              <div key={cat.category} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm cursor-pointer hover:bg-accent/50"
+                onClick={() => setFilterCat(filterCat === cat.category ? "all" : cat.category)}>
+                <Badge className={INV_CATEGORY_COLORS[cat.category] || "bg-gray-100 text-gray-700"}>{cat.category}</Badge>
+                <span className="font-medium">{formatCurrency(cat.totalCost)}</span>
+                <span className="text-muted-foreground text-xs">({pct}%)</span>
+              </div>
+            );
+          })}
+          {filterCat !== "all" && (
+            <Button variant="ghost" size="sm" onClick={() => setFilterCat("all")}>Clear filter</Button>
+          )}
+        </div>
+      )}
+
+      {/* Items Table */}
+      {filtered.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <Package className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground text-sm">{items.length === 0 ? "No inventory items yet." : "No items in this category."}</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 text-left">
+                <th className="px-4 py-2 font-medium">Item</th>
+                <th className="px-4 py-2 font-medium">Category</th>
+                <th className="px-4 py-2 font-medium text-center">Qty</th>
+                <th className="px-4 py-2 font-medium text-right">Unit Cost</th>
+                <th className="px-4 py-2 font-medium text-right">Total</th>
+                <th className="px-4 py-2 font-medium">Condition</th>
+                <th className="px-4 py-2 font-medium">Location</th>
+                <th className="px-4 py-2 font-medium w-20"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((item: any) => {
+                const condColor = item.condition === "New" || item.condition === "Good" ? "text-green-700" : item.condition === "Damaged" || item.condition === "Poor" ? "text-red-700" : "text-yellow-700";
+                return (
+                  <tr key={item.id} className="border-t hover:bg-accent/30">
+                    <td className="px-4 py-2.5">
+                      <p className="font-medium">{item.name}</p>
+                      {item.notes && <p className="text-xs text-muted-foreground truncate max-w-[200px]">{item.notes}</p>}
+                    </td>
+                    <td className="px-4 py-2.5"><Badge className={`text-[10px] border-0 ${INV_CATEGORY_COLORS[item.category] || ""}`}>{item.category}</Badge></td>
+                    <td className="px-4 py-2.5 text-center">{item.quantity}</td>
+                    <td className="px-4 py-2.5 text-right">{formatCurrency(item.unitCost)}</td>
+                    <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(item.totalCost)}</td>
+                    <td className={`px-4 py-2.5 ${condColor}`}>{item.condition}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground">{item.location || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(item.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add/Edit Dialog */}
+      <Dialog open={addOpen} onOpenChange={(open) => { if (!open) { setAddOpen(false); setEditItem(null); } }}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>{editItem ? "Edit Item" : "Add Inventory Item"}</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Item Name <span className="text-destructive">*</span></Label>
+              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder='e.g. Samsung 55" Smart TV' />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Category <span className="text-destructive">*</span></Label>
+                <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm">
+                  {INVENTORY_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Condition</Label>
+                <select value={form.condition} onChange={e => setForm(f => ({ ...f, condition: e.target.value }))}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm">
+                  {INVENTORY_CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Quantity</Label>
+                <Input type="number" min="1" value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Unit Cost (AED)</Label>
+                <Input type="number" min="0" value={form.unitCost} onChange={e => setForm(f => ({ ...f, unitCost: e.target.value }))} placeholder="0" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Purchase Date</Label>
+                <Input type="date" value={form.purchaseDate} onChange={e => setForm(f => ({ ...f, purchaseDate: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Location</Label>
+                <select value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm">
+                  <option value="">Select...</option>
+                  {INVENTORY_LOCATIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={2} placeholder="Brand, model, warranty, supplier..." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setAddOpen(false); setEditItem(null); }}>Cancel</Button>
+            <Button disabled={addMut.isPending || !form.name.trim()} onClick={() => addMut.mutate({
+              name: form.name, category: form.category, quantity: parseInt(form.quantity) || 1,
+              unitCost: form.unitCost || "0", condition: form.condition,
+              purchaseDate: form.purchaseDate || null, location: form.location || null, notes: form.notes || null,
+            })}>
+              {addMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {editItem ? "Save" : "Add Item"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ─── Tab: Investment ──────────────────────────────────────────────────────────
 
 function ViewInvestment({ property }: { property: StPropertyData }) {
   const { data: summary } = useQuery<{
@@ -1062,7 +1429,7 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
       <Separator className="mb-6" />
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <div className="rounded-lg border p-4 bg-blue-50/50">
           <p className="text-xs text-muted-foreground mb-1">Purchase Price</p>
           <p className="text-xl font-bold text-blue-700">{formatCurrency(summary?.purchasePrice)}</p>
@@ -1075,6 +1442,11 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
             </Badge>
           )}
         </div>
+        <div className="rounded-lg border p-4 bg-indigo-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Furnishing & Inventory</p>
+          <p className="text-xl font-bold text-indigo-700">{formatCurrency(summary?.inventoryValue)}</p>
+          <p className="text-xs text-muted-foreground mt-1">Physical assets</p>
+        </div>
         <div className="rounded-lg border p-4 bg-orange-50/50">
           <p className="text-xs text-muted-foreground mb-1">Additional Expenses</p>
           <p className="text-xl font-bold text-orange-700">{formatCurrency(summary?.totalExpenses)}</p>
@@ -1083,32 +1455,53 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
         <div className="rounded-lg border p-4 bg-green-50/50">
           <p className="text-xs text-muted-foreground mb-1">Total Investment</p>
           <p className="text-xl font-bold text-green-700">{formatCurrency(summary?.totalInvestment)}</p>
-          <p className="text-xs text-muted-foreground mt-1">Asset value to date</p>
+          <p className="text-xs text-muted-foreground mt-1">Purchase + inventory + expenses</p>
         </div>
       </div>
 
-      {/* Income Cards */}
+      {/* Revenue */}
       <h4 className="text-sm font-semibold mb-3">Revenue</h4>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="rounded-lg border p-4 bg-emerald-50/50">
-          <p className="text-xs text-muted-foreground mb-1">Total Income</p>
+          <p className="text-xs text-muted-foreground mb-1">Total Revenue</p>
           <p className="text-xl font-bold text-emerald-700">{formatCurrency(summary?.totalIncome)}</p>
           <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s)</p>
         </div>
         <div className="rounded-lg border p-4 bg-purple-50/50">
           <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
-          <p className="text-xl font-bold text-purple-700">{formatCurrency(summary?.totalCommission)}</p>
+          <p className="text-xl font-bold text-purple-700">-{formatCurrency(summary?.totalCommission)}</p>
         </div>
         <div className="rounded-lg border p-4 bg-cyan-50/50">
           <p className="text-xs text-muted-foreground mb-1">Owner Payout</p>
           <p className="text-xl font-bold text-cyan-700">{formatCurrency(summary?.totalOwnerPayout)}</p>
+        </div>
+      </div>
+
+      {/* Costs & Net Profit */}
+      <h4 className="text-sm font-semibold mb-3">Costs & Net Profit</h4>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
+          <p className="text-lg font-bold text-purple-700">{formatCurrency(summary?.totalCommission)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-indigo-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Inventory</p>
+          <p className="text-lg font-bold text-indigo-700">{formatCurrency(summary?.inventoryValue)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-orange-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Expenses</p>
+          <p className="text-lg font-bold text-orange-700">{formatCurrency(summary?.totalExpenses)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-red-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Costs</p>
+          <p className="text-lg font-bold text-red-700">{formatCurrency(summary?.totalCosts)}</p>
         </div>
         <div className={`rounded-lg border p-4 ${parseFloat(summary?.netProfit || "0") >= 0 ? "bg-green-50/50" : "bg-red-50/50"}`}>
           <p className="text-xs text-muted-foreground mb-1">Net Profit</p>
           <p className={`text-xl font-bold ${parseFloat(summary?.netProfit || "0") >= 0 ? "text-green-700" : "text-red-700"}`}>
             {formatCurrency(summary?.netProfit)}
           </p>
-          <p className="text-xs text-muted-foreground mt-1">Income - Expenses</p>
+          <p className="text-xs text-muted-foreground mt-1">Revenue - Commission - Inventory - Expenses</p>
         </div>
       </div>
 
@@ -2029,13 +2422,17 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
       </div>
       <Separator className="mb-6" />
 
+      {/* Full Transaction History */}
+      <TransactionHistory propertyId={property.id} />
+
+      <Separator className="my-6" />
+
+      <h4 className="text-sm font-semibold mb-3">Manual Expenses</h4>
+
       {!expenses || expenses.length === 0 ? (
-        <div className="text-center py-16 border rounded-lg">
-          <Receipt className="h-12 w-12 text-muted-foreground/30 mx-auto mb-4" />
-          <h4 className="text-lg font-medium text-muted-foreground mb-1">No Transactions Yet</h4>
-          <p className="text-sm text-muted-foreground">
-            Add expenses to track costs for this property.
-          </p>
+        <div className="text-center py-8 border rounded-lg">
+          <Receipt className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No manual expenses recorded yet.</p>
         </div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
@@ -2045,6 +2442,9 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
                 <th className="px-4 py-2 font-medium">Date</th>
                 <th className="px-4 py-2 font-medium">Category</th>
                 <th className="px-4 py-2 font-medium">Description</th>
+                <th className="px-4 py-2 font-medium">Responsible</th>
+                <th className="px-4 py-2 font-medium">Paid By</th>
+                <th className="px-4 py-2 font-medium">Status</th>
                 <th className="px-4 py-2 font-medium text-right">Amount</th>
                 <th className="px-4 py-2 font-medium w-20"></th>
               </tr>
@@ -2052,6 +2452,7 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
             <tbody>
               {expenses.map((exp: any) => {
                 const catLabel = EXPENSE_CATEGORIES.find((c) => c.value === exp.category)?.label || exp.category;
+                const payStatusColor = exp.paymentStatus === "paid" ? "bg-green-100 text-green-800" : exp.paymentStatus === "partial" ? "bg-yellow-100 text-yellow-800" : "bg-red-100 text-red-800";
                 return (
                   <tr key={exp.id} className="border-t hover:bg-muted/30">
                     <td className="px-4 py-2.5 text-muted-foreground">{formatDateShort(exp.expenseDate)}</td>
@@ -2060,7 +2461,16 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
                         {catLabel}
                       </Badge>
                     </td>
-                    <td className="px-4 py-2.5 truncate max-w-[200px]">{exp.description || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <p className="truncate max-w-[160px]">{exp.description || "—"}</p>
+                      {exp.billImageUrl && <a href={exp.billImageUrl} target="_blank" rel="noopener" className="text-xs text-primary hover:underline">View bill</a>}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs">{exp.responsibleParty?.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()) || "—"}</td>
+                    <td className="px-4 py-2.5 text-xs">{exp.paidBy?.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()) || "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <Badge className={`text-[10px] border-0 ${payStatusColor}`}>{exp.paymentStatus || "unpaid"}</Badge>
+                      {exp.paymentProofUrl && <a href={exp.paymentProofUrl} target="_blank" rel="noopener" className="text-xs text-primary hover:underline block mt-0.5">Proof</a>}
+                    </td>
                     <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(exp.amount)}</td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
@@ -2147,6 +2557,355 @@ function formatActivityTime(dateStr: string) {
   if (diffDays < 7) return `${diffDays}d ago`;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
+
+// ─── Tab: Calendar & Pricing ──────────────────────────────────────────────
+
+function ViewCalendarPricing({ property }: { property: StPropertyData }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [currentMonth, setCurrentMonth] = useState(() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() }; });
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkForm, setBulkForm] = useState({ price: "", weekdayPrice: "", weekendPrice: "", minStay: "", notes: "" });
+  const [singleEdit, setSingleEdit] = useState<{ date: string; price: string; minStay: string } | null>(null);
+
+  const startDate = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-01`;
+  const endD = new Date(currentMonth.year, currentMonth.month + 1, 0);
+  const endDate = `${endD.getFullYear()}-${String(endD.getMonth() + 1).padStart(2, "0")}-${String(endD.getDate()).padStart(2, "0")}`;
+
+  const { data } = useQuery<any>({
+    queryKey: [`/st-properties/${property.id}/calendar-pricing`, startDate, endDate],
+    queryFn: () => api.get(`/st-properties/${property.id}/calendar-pricing?from=${startDate}&to=${endDate}`),
+  });
+
+  const bulkMut = useMutation({
+    mutationFn: () => {
+      const body: any = { startDate: selectedDates[0], endDate: selectedDates[selectedDates.length - 1] };
+      if (bulkForm.price) body.price = bulkForm.price;
+      if (bulkForm.weekdayPrice) body.weekdayPrice = bulkForm.weekdayPrice;
+      if (bulkForm.weekendPrice) body.weekendPrice = bulkForm.weekendPrice;
+      if (bulkForm.minStay) body.minStay = parseInt(bulkForm.minStay);
+      if (bulkForm.notes) body.notes = bulkForm.notes;
+      return api.put(`/st-properties/${property.id}/pricing`, body);
+    },
+    onSuccess: () => {
+      toast({ title: "Pricing updated" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/calendar-pricing`] });
+      setBulkOpen(false); setSelectedDates([]); setBulkForm({ price: "", weekdayPrice: "", weekendPrice: "", minStay: "", notes: "" });
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const singleMut = useMutation({
+    mutationFn: () => api.patch(`/st-properties/${property.id}/pricing/${singleEdit!.date}`, {
+      price: singleEdit!.price, minStay: singleEdit!.minStay ? parseInt(singleEdit!.minStay) : null,
+    }),
+    onSuccess: () => {
+      toast({ title: "Price updated" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/calendar-pricing`] });
+      setSingleEdit(null);
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const resetMut = useMutation({
+    mutationFn: () => api.delete(`/st-properties/${property.id}/pricing`, { data: { startDate: selectedDates[0], endDate: selectedDates[selectedDates.length - 1] } }),
+    onSuccess: () => {
+      toast({ title: "Pricing reset to defaults" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/calendar-pricing`] });
+      setSelectedDates([]);
+    },
+  });
+
+  // Build calendar grid
+  const defaults = data?.defaults || {};
+  const defaultNightly = parseFloat(defaults.nightlyRate || "0");
+  const defaultWeekend = parseFloat(defaults.weekendRate || defaults.nightlyRate || "0");
+
+  const pricingMap = new Map<string, any>();
+  (data?.pricing || []).forEach((p: any) => {
+    const d = typeof p.date === "string" ? p.date.slice(0, 10) : fmtDate(new Date(p.date));
+    pricingMap.set(d, p);
+  });
+
+  // Helper to format date without timezone issues
+  const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  const bookingMap = new Map<string, any>();
+  (data?.bookings || []).forEach((b: any) => {
+    const startStr = typeof b.checkIn === "string" ? b.checkIn.slice(0, 10) : b.checkIn;
+    const endStr = typeof b.checkOut === "string" ? b.checkOut.slice(0, 10) : b.checkOut;
+    const start = new Date(startStr + "T12:00:00");
+    const end = new Date(endStr + "T12:00:00");
+    for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
+      bookingMap.set(fmtDate(d), b);
+    }
+  });
+
+  const blockedSet = new Set<string>();
+  (data?.blocked || []).forEach((bl: any) => {
+    const startStr = typeof bl.startDate === "string" ? bl.startDate.slice(0, 10) : bl.startDate;
+    const endStr = typeof bl.endDate === "string" ? bl.endDate.slice(0, 10) : bl.endDate;
+    const start = new Date(startStr + "T12:00:00");
+    const end = new Date(endStr + "T12:00:00");
+    for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
+      blockedSet.add(fmtDate(d));
+    }
+  });
+
+  const firstDay = new Date(currentMonth.year, currentMonth.month, 1).getDay();
+  const daysInMonth = new Date(currentMonth.year, currentMonth.month + 1, 0).getDate();
+  const today = fmtDate(new Date());
+
+  const prevMonth = () => setCurrentMonth(m => m.month === 0 ? { year: m.year - 1, month: 11 } : { year: m.year, month: m.month - 1 });
+  const nextMonth = () => setCurrentMonth(m => m.month === 11 ? { year: m.year + 1, month: 0 } : { year: m.year, month: m.month + 1 });
+
+  const toggleDate = (dateStr: string) => {
+    setSelectedDates(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr].sort());
+  };
+
+  const monthName = new Date(currentMonth.year, currentMonth.month).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="h-5 w-5 text-primary" />
+          <h3 className="text-lg font-semibold">Calendar & Pricing</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          {selectedDates.length > 0 && (
+            <>
+              <Badge variant="secondary">{selectedDates.length} selected</Badge>
+              <Button size="sm" onClick={() => setBulkOpen(true)}>Set Pricing</Button>
+              <Button size="sm" variant="outline" onClick={() => resetMut.mutate()}>Reset to Default</Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedDates([])}>Clear</Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 mb-4 text-xs">
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-100 border border-green-300" /> Available</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-100 border border-blue-300" /> Booked</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100 border border-red-300" /> Blocked</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-amber-100 border border-amber-300" /> Custom Price</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-primary/20 border border-primary" /> Selected</span>
+        <span className="text-muted-foreground ml-2">Default: AED {defaultNightly} weekday / AED {defaultWeekend} weekend</span>
+      </div>
+
+      {/* Month Navigation */}
+      <div className="flex items-center justify-between mb-3">
+        <Button variant="outline" size="sm" onClick={prevMonth}>← Prev</Button>
+        <h4 className="text-base font-semibold">{monthName}</h4>
+        <Button variant="outline" size="sm" onClick={nextMonth}>Next →</Button>
+      </div>
+
+      {/* Calendar Grid */}
+      <div className="grid grid-cols-7 gap-1">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => (
+          <div key={d} className="text-center text-xs font-semibold text-muted-foreground py-1">{d}</div>
+        ))}
+        {Array.from({ length: firstDay }, (_, i) => <div key={`e-${i}`} className="min-h-[80px]" />)}
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          const day = i + 1;
+          const dateStr = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const dayOfWeek = new Date(currentMonth.year, currentMonth.month, day).getDay();
+          const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
+          const booking = bookingMap.get(dateStr);
+          const isBlocked = blockedSet.has(dateStr);
+          const customPrice = pricingMap.get(dateStr);
+          const isSelected = selectedDates.includes(dateStr);
+          const isPast = dateStr < today;
+
+          const price = customPrice ? parseFloat(customPrice.price) : (isWeekend ? defaultWeekend : defaultNightly);
+          const isCustom = !!customPrice;
+
+          let bg = "bg-green-50 border-green-200 hover:bg-green-100";
+          if (booking) bg = "bg-blue-50 border-blue-200";
+          if (isBlocked) bg = "bg-red-50 border-red-200";
+          if (isCustom && !booking && !isBlocked) bg = "bg-amber-50 border-amber-200";
+          if (isSelected) bg = "bg-primary/10 border-primary ring-1 ring-primary";
+          if (isPast) bg = "bg-gray-50 border-gray-200 opacity-50";
+
+          const statusMap: Record<string, string> = { requested: "REQ", confirmed: "CNF", checked_in: "IN", checked_out: "OUT" };
+
+          return (
+            <div
+              key={dateStr}
+              className={`min-h-[80px] border rounded-md p-1.5 cursor-pointer transition-colors text-xs ${bg}`}
+              onClick={() => {
+                if (isPast) return;
+                if (booking || isBlocked) return;
+                toggleDate(dateStr);
+              }}
+              onDoubleClick={() => {
+                if (isPast || booking || isBlocked) return;
+                setSingleEdit({ date: dateStr, price: String(price), minStay: customPrice?.minStay?.toString() || "" });
+              }}
+            >
+              <div className="flex justify-between items-start">
+                <span className={`font-semibold ${dateStr === today ? "text-primary" : ""}`}>{day}</span>
+                {isWeekend && <span className="text-[9px] text-muted-foreground">WE</span>}
+              </div>
+              <p className={`font-bold mt-0.5 ${isCustom ? "text-amber-700" : "text-gray-700"}`}>
+                {price > 0 ? `${price}` : "—"}
+              </p>
+              {booking && (
+                <div className="mt-0.5">
+                  <p className="truncate text-[10px] text-blue-700 font-medium">{booking.guestName}</p>
+                  <Badge className="text-[8px] h-3.5 bg-blue-100 text-blue-800 border-0">{statusMap[booking.status] || booking.status}</Badge>
+                </div>
+              )}
+              {isBlocked && <p className="text-[10px] text-red-600 mt-0.5">Blocked</p>}
+              {customPrice?.minStay && <p className="text-[9px] text-muted-foreground">Min {customPrice.minStay}n</p>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bulk Pricing Dialog */}
+      <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Set Pricing — {selectedDates.length} days</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">{selectedDates[0]} to {selectedDates[selectedDates.length - 1]}</p>
+          <div className="space-y-4 mt-2">
+            <div className="space-y-1.5">
+              <Label>Flat Price (AED) — applies to all days</Label>
+              <Input type="number" value={bulkForm.price} onChange={e => setBulkForm(f => ({ ...f, price: e.target.value, weekdayPrice: "", weekendPrice: "" }))} placeholder="e.g. 1500" />
+            </div>
+            <Separator />
+            <p className="text-xs text-muted-foreground">Or set different weekday/weekend prices:</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Weekday Price</Label>
+                <Input type="number" value={bulkForm.weekdayPrice} onChange={e => setBulkForm(f => ({ ...f, weekdayPrice: e.target.value, price: "" }))} placeholder="Sun-Thu" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Weekend Price</Label>
+                <Input type="number" value={bulkForm.weekendPrice} onChange={e => setBulkForm(f => ({ ...f, weekendPrice: e.target.value, price: "" }))} placeholder="Fri-Sat" />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Minimum Stay (nights)</Label>
+              <Input type="number" value={bulkForm.minStay} onChange={e => setBulkForm(f => ({ ...f, minStay: e.target.value }))} placeholder="Optional" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Input value={bulkForm.notes} onChange={e => setBulkForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. Peak season, Eid holiday" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkOpen(false)}>Cancel</Button>
+            <Button disabled={bulkMut.isPending || (!bulkForm.price && !bulkForm.weekdayPrice)} onClick={() => bulkMut.mutate()}>
+              {bulkMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Apply Pricing
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Single Date Edit Dialog */}
+      <Dialog open={!!singleEdit} onOpenChange={(o) => !o && setSingleEdit(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Edit Price — {singleEdit?.date}</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Price (AED)</Label>
+              <Input type="number" value={singleEdit?.price || ""} onChange={e => setSingleEdit(prev => prev ? { ...prev, price: e.target.value } : null)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Min Stay (nights)</Label>
+              <Input type="number" value={singleEdit?.minStay || ""} onChange={e => setSingleEdit(prev => prev ? { ...prev, minStay: e.target.value } : null)} placeholder="Optional" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSingleEdit(null)}>Cancel</Button>
+            <Button disabled={singleMut.isPending || !singleEdit?.price} onClick={() => singleMut.mutate()}>
+              {singleMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ─── Tab: Reviews ──────────────────────────────────────────────────────────
+
+function ViewReviews({ property }: { property: StPropertyData }) {
+  const { data, isLoading } = useQuery<{ reviews: any[]; total: number; avgRating: string }>({
+    queryKey: [`/public/properties/${property.id}/reviews`],
+    queryFn: () => api.get(`/public/properties/${property.id}/reviews?limit=50`),
+  });
+
+  if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>;
+
+  const reviews = data?.reviews || [];
+  const avg = parseFloat(data?.avgRating || "0");
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      <div className="flex items-center gap-2 mb-1">
+        <Star className="h-5 w-5 text-primary" />
+        <h3 className="text-lg font-semibold">Guest Reviews</h3>
+      </div>
+      <Separator className="mb-6" />
+
+      {/* Summary */}
+      <div className="flex items-center gap-6 mb-6">
+        <div className="text-center">
+          <p className="text-4xl font-bold">{avg > 0 ? avg.toFixed(1) : "—"}</p>
+          <div className="flex gap-0.5 mt-1 justify-center">
+            {[1, 2, 3, 4, 5].map(i => (
+              <Star key={i} className={`h-4 w-4 ${i <= Math.round(avg) ? "text-yellow-500 fill-yellow-500" : "text-gray-300"}`} />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">{data?.total || 0} review(s)</p>
+        </div>
+      </div>
+
+      {reviews.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <Star className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground">No reviews yet</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {reviews.map((r: any) => (
+            <Card key={r.id}>
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex gap-0.5 mb-1">
+                      {[1, 2, 3, 4, 5].map(i => (
+                        <Star key={i} className={`h-4 w-4 ${i <= r.rating ? "text-yellow-500 fill-yellow-500" : "text-gray-300"}`} />
+                      ))}
+                    </div>
+                    {r.title && <p className="font-semibold">{r.title}</p>}
+                    {r.description && <p className="text-sm text-muted-foreground mt-1">{r.description}</p>}
+                  </div>
+                  <div className="text-right text-xs text-muted-foreground shrink-0">
+                    <p>{r.guestName || "Guest"}</p>
+                    <p>{r.createdAt ? new Date(r.createdAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : ""}</p>
+                  </div>
+                </div>
+                {r.pmResponse && (
+                  <div className="mt-3 bg-muted/50 rounded p-3 text-sm">
+                    <p className="text-xs font-semibold text-muted-foreground mb-1">PM Response</p>
+                    <p>{r.pmResponse}</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tab: Activity Log ──────────────────────────────────────────────────────
 
 function ViewActivity({ property }: { property: StPropertyData }) {
   const { data: activities } = useQuery<any[]>({

@@ -8,6 +8,7 @@ import { recordBookingIncome, recordBookingRefund, recordDepositReturn, recordOw
 import { createBookingSettlements } from "../utils/settlements";
 import { triggerCleaningAutomation } from "./cleaners";
 import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
+import { sanitize } from "../utils/sanitize";
 
 const router = Router();
 
@@ -103,6 +104,10 @@ router.post("/calculate-price", async (req: Request, res: Response) => {
     if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
       return res.status(400).json({ error: "Invalid date format" });
     }
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (checkInDate < today) {
+      return res.status(400).json({ error: "Check-in date cannot be in the past" });
+    }
     if (checkOutDate <= checkInDate) {
       return res.status(400).json({ error: "Check-out date must be after check-in date" });
     }
@@ -134,7 +139,25 @@ router.post("/calculate-price", async (req: Request, res: Response) => {
     const cleaningFee = parseFloat(prop.cleaning_fee || "0");
     const securityDeposit = prop.security_deposit_required ? parseFloat(prop.security_deposit_amount || "0") : 0;
 
-    const nightlyTotal = (weekdayNights * nightlyRate) + (weekendNights * weekendRate);
+    // Check for custom date-specific pricing
+    const customPricing = await db.execute(sql`
+      SELECT date, price FROM st_property_pricing
+      WHERE property_id = ${propertyId} AND date >= ${checkIn} AND date < ${checkOut}
+    `);
+    const customPriceMap = new Map((customPricing.rows as any[]).map(r => [r.date.toISOString().slice(0, 10), parseFloat(r.price)]));
+
+    // Calculate nightly total respecting custom prices
+    let nightlyTotal = 0;
+    const d = new Date(checkIn + "T00:00:00");
+    const endD = new Date(checkOut + "T00:00:00");
+    while (d < endD) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const dayOfWeek = d.getDay();
+      const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
+      const customPrice = customPriceMap.get(dateStr);
+      nightlyTotal += customPrice !== undefined ? customPrice : (isWeekend ? weekendRate : nightlyRate);
+      d.setDate(d.getDate() + 1);
+    }
 
     // Get PM tax settings
     const taxResult = await db.execute(sql`
@@ -189,6 +212,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     }
     if (userRole === "PM_TEAM_MEMBER") {
       return res.status(403).json({ error: "Team members should use the manual booking feature" });
+    }
+    if (userRole === "CLEANER") {
+      return res.status(403).json({ error: "Cleaners cannot create bookings" });
     }
 
     const { propertyId, checkIn, checkOut, guests, paymentMethod, specialRequests } = req.body;
@@ -316,7 +342,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         ${commissionAmount},
         ${prop.bank_account_belongs_to ? sql.raw(`'${prop.bank_account_belongs_to}'::st_bank_account_belongs_to`) : sql`NULL`},
         ${ownerPayoutAmount}, 'pending',
-        ${specialRequests || null},
+        ${specialRequests ? sanitize(specialRequests) : null},
         ${expiresAt},
         NOW(), NOW()
       )
@@ -940,6 +966,11 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
 
     const prop = propResult.rows[0] as any;
 
+    // Validate max guests
+    if (guests && prop.max_guests && guests > prop.max_guests) {
+      return res.status(400).json({ error: `Maximum ${prop.max_guests} guests allowed` });
+    }
+
     // Check availability
     const conflict = await db.execute(sql`
       SELECT 1 FROM st_bookings
@@ -1450,6 +1481,78 @@ router.patch("/:id/payout", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), r
   } catch (error: any) {
     console.error("[Bookings] PATCH payout error:", error);
     return res.status(500).json({ error: "Failed to record payout" });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+// REVIEWS
+// ══════════════════════════════════════════════════════
+
+// Submit a review (guest only, after checkout/completed)
+router.post("/:id/review", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const { id } = req.params;
+    const { rating, title, description } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: "Rating must be 1-5" });
+
+    // Verify booking belongs to guest and is checked_out or completed
+    const bookingResult = await db.execute(sql`
+      SELECT b.id, b.property_id, b.status, b.guest_user_id
+      FROM st_bookings b WHERE b.id = ${id}
+    `);
+    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+
+    const booking = bookingResult.rows[0] as any;
+    if (booking.guest_user_id !== userId) return res.status(403).json({ error: "Not your booking" });
+    if (!["checked_out", "completed"].includes(booking.status)) {
+      return res.status(400).json({ error: "Can only review after checkout" });
+    }
+
+    // Check if already reviewed
+    const existing = await db.execute(sql`SELECT id FROM st_reviews WHERE booking_id = ${id}`);
+    if (existing.rows.length > 0) return res.status(400).json({ error: "Already reviewed" });
+
+    const reviewId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO st_reviews (id, booking_id, property_id, guest_user_id, rating, title, description)
+      VALUES (${reviewId}, ${id}, ${booking.property_id}, ${userId}, ${rating}, ${title ? sanitize(title) : null}, ${description ? sanitize(description) : null})
+    `);
+
+    // Notify PM
+    const pmResult = await db.execute(sql`SELECT pm_user_id FROM st_properties WHERE id = ${booking.property_id}`);
+    const pmId = (pmResult.rows[0] as any)?.pm_user_id;
+    if (pmId) {
+      await createNotification({
+        userId: pmId,
+        type: "REVIEW_RECEIVED",
+        title: "New review received",
+        body: `A guest left a ${rating}-star review`,
+        relatedId: reviewId,
+      });
+    }
+
+    return res.status(201).json({ id: reviewId });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Get review for a booking
+router.get("/:id/review", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT r.*, g.full_name AS "guestName"
+      FROM st_reviews r
+      LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      WHERE r.booking_id = ${id}
+    `);
+    if (result.rows.length === 0) return res.status(404).json({ error: "No review" });
+    return res.json(result.rows[0]);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 
