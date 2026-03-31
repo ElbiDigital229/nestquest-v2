@@ -224,13 +224,13 @@ function datesOverlap(
 
 // ── Component ──────────────────────────────────────────────
 
-export default function PropertyDetailPage() {
+export default function PropertyDetailPage({ id: propId }: { id?: string }) {
   const [, navigate] = useLocation();
   const [match, routeParams] = useRoute("/property/:id");
   const search = useSearch();
   const { user } = useAuth();
 
-  const propertyId = routeParams?.id;
+  const propertyId = propId || routeParams?.id;
   const searchParams = new URLSearchParams(search);
 
   // State
@@ -308,7 +308,7 @@ export default function PropertyDetailPage() {
           );
           setReviewsMeta({
             total: data.total,
-            avgRating: data.avgRating,
+            avgRating: Number(data.avgRating),
             page: data.page,
             totalPages: data.totalPages,
           });
@@ -561,7 +561,7 @@ export default function PropertyDetailPage() {
                 <div className="flex items-center gap-2">
                   {renderStars(property.avgRating)}
                   <span className="font-semibold">
-                    {property.avgRating.toFixed(1)}
+                    {Number(property.avgRating).toFixed(1)}
                   </span>
                   <span className="text-muted-foreground">
                     ({property.reviewCount}{" "}
@@ -775,9 +775,9 @@ export default function PropertyDetailPage() {
 
               {reviewsMeta && reviewsMeta.total > 0 && (
                 <div className="flex items-center gap-3 mb-6">
-                  {renderStars(reviewsMeta.avgRating, 20)}
+                  {renderStars(Number(reviewsMeta.avgRating), 20)}
                   <span className="text-2xl font-bold">
-                    {reviewsMeta.avgRating.toFixed(1)}
+                    {Number(reviewsMeta.avgRating).toFixed(1)}
                   </span>
                   <span className="text-muted-foreground">
                     based on {reviewsMeta.total}{" "}

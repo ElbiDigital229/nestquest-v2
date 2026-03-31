@@ -19,6 +19,7 @@ import {
   Building,
   SprayCan,
   ClipboardCheck,
+  Star,
   ChevronDown,
   ChevronRight,
   CalendarDays,
@@ -59,6 +60,7 @@ const roleNavItems: Record<string, NavItem[]> = {
   PROPERTY_OWNER: [
     { label: "My Properties", href: "/portal/po-properties", icon: Home },
     { label: "Documents", href: "/portal/documents", icon: FileText },
+    { label: "Reviews", href: "/portal/my-reviews", icon: Star },
     { label: "Settlements", href: "/portal/settlements", icon: Handshake },
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
@@ -76,6 +78,7 @@ const roleNavItems: Record<string, NavItem[]> = {
 const stNavItems: NavItem[] = [
   { label: "ST Properties", href: "/portal/st-properties", icon: Home },
   { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
+  { label: "Reviews", href: "/portal/st-reviews", icon: Star },
 ];
 
 // Cleaner ops sub-nav

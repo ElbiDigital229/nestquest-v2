@@ -163,6 +163,67 @@ router.get("/properties", async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/public/properties/:id/availability ───────
+// Returns booked + blocked date ranges for calendar
+router.get("/properties/:id/availability", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { from, to } = req.query as Record<string, string>;
+    const startDate = from || new Date().toISOString().slice(0, 10);
+    const endDate = to || new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10);
+
+    const booked = await db.execute(sql`
+      SELECT check_in_date AS "checkIn", check_out_date AS "checkOut", status
+      FROM st_bookings WHERE property_id = ${id}
+      AND status IN ('confirmed', 'checked_in', 'requested')
+      AND check_in_date <= ${endDate} AND check_out_date >= ${startDate}
+      ORDER BY check_in_date ASC
+    `);
+    const blocked = await db.execute(sql`
+      SELECT start_date AS "startDate", end_date AS "endDate", reason
+      FROM st_blocked_dates WHERE property_id = ${id}
+      AND start_date <= ${endDate} AND end_date >= ${startDate}
+      ORDER BY start_date ASC
+    `);
+    const prop = await db.execute(sql`SELECT minimum_stay AS "minimumStay" FROM st_properties WHERE id = ${id}`);
+
+    return res.json({ booked: booked.rows, blocked: blocked.rows, minimumStay: prop.rows[0]?.minimumStay || 1 });
+  } catch (error: any) {
+    return res.status(500).json({ error: "Failed to fetch availability" });
+  }
+});
+
+// ── GET /api/public/properties/:id/reviews ────────────
+router.get("/properties/:id/reviews", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 10));
+    const offset = (page - 1) * limit;
+
+    const countResult = await db.execute(sql`
+      SELECT COUNT(*)::int AS total, COALESCE(AVG(rating), 0)::DECIMAL(3,1) AS "avgRating"
+      FROM st_reviews WHERE property_id = ${id}
+    `);
+    const reviews = await db.execute(sql`
+      SELECT r.id, r.rating, r.title, r.description,
+        r.pm_response AS "pmResponse", r.created_at AS "createdAt",
+        g.full_name AS "guestName"
+      FROM st_reviews r LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      WHERE r.property_id = ${id} ORDER BY r.created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    return res.json({
+      reviews: reviews.rows, total: countResult.rows[0]?.total || 0,
+      avgRating: countResult.rows[0]?.avgRating || 0, page,
+      totalPages: Math.ceil((countResult.rows[0]?.total || 0) / limit),
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: "Failed to fetch reviews" });
+  }
+});
+
 // ── GET /api/public/properties/:id ────────────────────
 // Full property detail for public view
 router.get("/properties/:id", async (req: Request, res: Response) => {
@@ -245,92 +306,6 @@ router.get("/properties/:id", async (req: Request, res: Response) => {
   }
 });
 
-// ── GET /api/public/properties/:id/availability ───────
-// Returns booked + blocked date ranges for calendar
-router.get("/properties/:id/availability", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { from, to } = req.query as Record<string, string>;
-
-    // Default: next 6 months
-    const startDate = from || new Date().toISOString().slice(0, 10);
-    const endDate = to || new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10);
-
-    // Booked dates (confirmed/checked_in bookings)
-    const booked = await db.execute(sql`
-      SELECT check_in_date AS "checkIn", check_out_date AS "checkOut", status
-      FROM st_bookings
-      WHERE property_id = ${id}
-      AND status IN ('confirmed', 'checked_in', 'requested')
-      AND check_in_date <= ${endDate}
-      AND check_out_date >= ${startDate}
-      ORDER BY check_in_date ASC
-    `);
-
-    // Blocked dates
-    const blocked = await db.execute(sql`
-      SELECT start_date AS "startDate", end_date AS "endDate", reason
-      FROM st_blocked_dates
-      WHERE property_id = ${id}
-      AND start_date <= ${endDate}
-      AND end_date >= ${startDate}
-      ORDER BY start_date ASC
-    `);
-
-    // Property minimum stay
-    const prop = await db.execute(sql`
-      SELECT minimum_stay AS "minimumStay" FROM st_properties WHERE id = ${id}
-    `);
-
-    return res.json({
-      booked: booked.rows,
-      blocked: blocked.rows,
-      minimumStay: prop.rows[0]?.minimumStay || 1,
-    });
-  } catch (error: any) {
-    console.error("[Public] GET availability error:", error);
-    return res.status(500).json({ error: "Failed to fetch availability" });
-  }
-});
-
-// ── GET /api/public/properties/:id/reviews ────────────
-// Paginated reviews with average rating
-router.get("/properties/:id/reviews", async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 10));
-    const offset = (page - 1) * limit;
-
-    const countResult = await db.execute(sql`
-      SELECT COUNT(*)::int AS total,
-        COALESCE(AVG(rating), 0)::DECIMAL(3,1) AS "avgRating"
-      FROM st_reviews WHERE property_id = ${id}
-    `);
-
-    const reviews = await db.execute(sql`
-      SELECT r.id, r.rating, r.title, r.description,
-        r.pm_response AS "pmResponse", r.pm_responded_at AS "pmRespondedAt",
-        r.created_at AS "createdAt",
-        g.full_name AS "guestName"
-      FROM st_reviews r
-      LEFT JOIN guests g ON g.user_id = r.guest_user_id
-      WHERE r.property_id = ${id}
-      ORDER BY r.created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    `);
-
-    return res.json({
-      reviews: reviews.rows,
-      total: countResult.rows[0]?.total || 0,
-      avgRating: countResult.rows[0]?.avgRating || 0,
-      page,
-      totalPages: Math.ceil((countResult.rows[0]?.total || 0) / limit),
-    });
-  } catch (error: any) {
-    console.error("[Public] GET reviews error:", error);
-    return res.status(500).json({ error: "Failed to fetch reviews" });
-  }
-});
+// (availability and reviews routes moved before /:id)
 
 export default router;

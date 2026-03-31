@@ -134,6 +134,7 @@ export default function SearchPage() {
   const [propertyType, setPropertyType] = useState(params.get("propertyType") || "");
   const [bedrooms, setBedrooms] = useState(params.get("bedrooms") || "");
   const [sort, setSort] = useState(params.get("sort") || "");
+  const [minRating, setMinRating] = useState(params.get("minRating") || "");
   const [page, setPage] = useState(Number(params.get("page")) || 1);
 
   // Data state
@@ -165,10 +166,11 @@ export default function SearchPage() {
     if (propertyType) q.set("propertyType", propertyType);
     if (bedrooms) q.set("bedrooms", bedrooms);
     if (sort) q.set("sort", sort);
+    if (minRating) q.set("minRating", minRating);
     q.set("page", String(page));
     q.set("limit", String(LIMIT));
     return q.toString();
-  }, [areaId, city, checkIn, checkOut, guests, minPrice, maxPrice, propertyType, bedrooms, sort, page]);
+  }, [areaId, city, checkIn, checkOut, guests, minPrice, maxPrice, propertyType, bedrooms, minRating, sort, page]);
 
   // Fetch properties
   useEffect(() => {
@@ -309,7 +311,7 @@ export default function SearchPage() {
             {/* Property type */}
             <div className="w-full sm:w-auto">
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Type</label>
-              <Select value={propertyType} onValueChange={(v) => setPropertyType(v === "__all__" ? "" : v)}>
+              <Select value={propertyType} onValueChange={(v) => { setPropertyType(v === "__all__" ? "" : v); setPage(1); }}>
                 <SelectTrigger className="w-full sm:w-[150px]">
                   <SelectValue placeholder="All types" />
                 </SelectTrigger>
@@ -338,10 +340,26 @@ export default function SearchPage() {
               />
             </div>
 
+            {/* Rating */}
+            <div className="w-[calc(50%-4px)] sm:w-auto">
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Min Rating</label>
+              <Select value={minRating || "__any__"} onValueChange={(v) => { setMinRating(v === "__any__" ? "" : v); setPage(1); }}>
+                <SelectTrigger className="w-full sm:w-[110px]">
+                  <SelectValue placeholder="Any" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__any__">Any</SelectItem>
+                  <SelectItem value="3">3+ Stars</SelectItem>
+                  <SelectItem value="4">4+ Stars</SelectItem>
+                  <SelectItem value="4.5">4.5+ Stars</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Sort */}
             <div className="w-full sm:w-auto">
               <label className="text-xs font-medium text-muted-foreground mb-1 block">Sort</label>
-              <Select value={sort} onValueChange={(v) => setSort(v === "__default__" ? "" : v)}>
+              <Select value={sort} onValueChange={(v) => { setSort(v === "__default__" ? "" : v); setPage(1); }}>
                 <SelectTrigger className="w-full sm:w-[170px]">
                   <SelectValue placeholder="Default" />
                 </SelectTrigger>
@@ -566,24 +584,55 @@ export default function SearchPage() {
                 <FitBounds properties={properties} />
                 {properties
                   .filter((p) => p.latitude != null && p.longitude != null)
-                  .map((property) => (
-                    <Marker
-                      key={property.id}
-                      position={[property.latitude!, property.longitude!]}
-                      eventHandlers={{
-                        click: () => handleMarkerClick(property.id),
-                      }}
-                    >
-                      <Popup>
-                        <div className="text-sm">
-                          <p className="font-semibold">{property.publicName}</p>
-                          <p className="text-muted-foreground">
-                            AED {Number(property.nightlyRate).toLocaleString()} / night
-                          </p>
-                        </div>
-                      </Popup>
-                    </Marker>
-                  ))}
+                  .map((property) => {
+                    const price = Number(property.nightlyRate).toLocaleString();
+                    const isHighlighted = highlightedId === property.id;
+                    const label = `AED ${price}`;
+                    const width = label.length * 8 + 24;
+                    const priceIcon = L.divIcon({
+                      className: "",
+                      html: `<div style="
+                        background: ${isHighlighted ? "#1a1a1a" : "#fff"};
+                        color: ${isHighlighted ? "#fff" : "#1a1a1a"};
+                        border: 2px solid ${isHighlighted ? "#1a1a1a" : "#ddd"};
+                        border-radius: 20px;
+                        padding: 4px 12px;
+                        font-size: 12px;
+                        font-weight: 700;
+                        white-space: nowrap;
+                        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                        cursor: pointer;
+                        display: inline-block;
+                        text-align: center;
+                        line-height: 18px;
+                      ">${label}</div>`,
+                      iconSize: [width, 28],
+                      iconAnchor: [width / 2, 14],
+                    });
+                    return (
+                      <Marker
+                        key={property.id}
+                        position={[property.latitude!, property.longitude!]}
+                        icon={priceIcon}
+                        eventHandlers={{
+                          click: () => handleMarkerClick(property.id),
+                        }}
+                      >
+                        <Popup>
+                          <div className="text-sm min-w-[160px]">
+                            {property.coverPhoto && <img src={property.coverPhoto} alt="" className="w-full h-20 object-cover rounded mb-2" />}
+                            <p className="font-semibold">{property.publicName}</p>
+                            <p className="text-muted-foreground">
+                              AED {price} / night
+                            </p>
+                            {property.reviewCount > 0 && (
+                              <p className="text-xs mt-1">⭐ {Number(property.avgRating).toFixed(1)} ({property.reviewCount})</p>
+                            )}
+                          </div>
+                        </Popup>
+                      </Marker>
+                    );
+                  })}
               </MapContainer>
             </div>
           </div>

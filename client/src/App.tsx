@@ -10,6 +10,8 @@ import PortalReports from "@/pages/portal/reports";
 import PortalSettlements from "@/pages/portal/settlements";
 import PortalTeam from "@/pages/portal/team";
 import CalendarOverview from "@/pages/portal/calendar-overview";
+import StReviews from "@/pages/portal/st-reviews";
+import MyReviews from "@/pages/portal/my-reviews";
 import CleanerOps from "@/pages/portal/cleaner-ops";
 import ReviewPage from "@/pages/portal/review";
 import CleanerTasks from "@/pages/portal/cleaner-tasks";
@@ -204,6 +206,20 @@ export default function App() {
           </ProtectedRoute>
         )}
       </Route>
+      <Route path="/portal/my-reviews">
+        <ProtectedRoute roles={["PROPERTY_OWNER", "PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <MyReviews />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/st-reviews">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <StReviews />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
       <Route path="/portal/calendar">
         <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
           <PortalLayout fullWidth>
@@ -328,7 +344,7 @@ export default function App() {
       {/* Public website routes */}
       <Route path="/search" component={PublicSearch} />
       <Route path="/property/:id">
-        {(params) => <PublicPropertyDetail />}
+        {(params) => <PublicPropertyDetail id={params.id} />}
       </Route>
       <Route path="/booking/confirm" component={BookingConfirm} />
       <Route path="/booking/payment" component={BookingPayment} />

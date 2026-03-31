@@ -24,6 +24,7 @@ import {
   TrendingUp,
   Activity,
   CalendarDays,
+  Star,
   MapPin,
   BedDouble,
   Bath,
@@ -81,6 +82,7 @@ const TABS = [
   { key: "policies", name: "Policies", icon: ShieldCheck },
   { key: "investment", name: "Investment", icon: TrendingUp },
   { key: "bookings", name: "Bookings", icon: CalendarDays },
+  { key: "reviews", name: "Reviews", icon: Star },
   { key: "activity", name: "Activity Log", icon: Activity },
 ] as const;
 
@@ -229,6 +231,7 @@ export default function PoPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "policies" && <PoliciesTab property={property} />}
           {activeTab === "investment" && <InvestmentTab property={property} />}
           {activeTab === "bookings" && <ViewBookings property={property} />}
+          {activeTab === "reviews" && <ReviewsTab propertyId={property.id} />}
           {activeTab === "activity" && <ActivityTab property={property} />}
         </div>
       </div>
@@ -377,47 +380,31 @@ function PoliciesTab({ property }: { property: PropertyData }) {
 // ─── Investment Tab (Read-Only for PO) ──────────────────────────────────────────
 
 function InvestmentTab({ property }: { property: PropertyData }) {
-  const { data: summary } = useQuery<{
-    purchasePrice: string;
-    purchaseDate: string | null;
-    acquisitionType: string | null;
-    totalExpenses: string;
-    expenseCount: number;
-    totalInvestment: string;
-    categoryBreakdown: { category: string; total: string; count: number }[];
-  }>({
+  const { data: summary } = useQuery<any>({
     queryKey: [`/st-properties/${property.id}/investment-summary`],
     queryFn: () => api.get(`/st-properties/${property.id}/investment-summary`),
   });
 
-  const { data: expenses } = useQuery<any[]>({
-    queryKey: [`/st-properties/${property.id}/expenses`],
-    queryFn: () => api.get(`/st-properties/${property.id}/expenses`),
-  });
-
-  const totalExpenses = parseFloat(summary?.totalExpenses || "0");
-
   return (
-    <div className="max-w-4xl mx-auto p-6">
+    <div className="max-w-5xl mx-auto p-6">
       <div className="flex items-center gap-2 mb-1">
         <TrendingUp className="h-5 w-5 text-primary" />
         <h3 className="text-lg font-semibold">Investment Overview</h3>
       </div>
       <Separator className="mb-6" />
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+      {/* Investment Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <div className="rounded-lg border p-4 bg-blue-50/50">
           <p className="text-xs text-muted-foreground mb-1">Purchase Price</p>
           <p className="text-xl font-bold text-blue-700">{formatCurrency(summary?.purchasePrice)}</p>
-          {summary?.purchaseDate && (
-            <p className="text-xs text-muted-foreground mt-1">Purchased {formatDateShort(summary.purchaseDate)}</p>
-          )}
-          {summary?.acquisitionType && (
-            <Badge variant="secondary" className="mt-2 text-[10px]">
-              {summary.acquisitionType.replace(/_/g, " ").toUpperCase()}
-            </Badge>
-          )}
+          {summary?.purchaseDate && <p className="text-xs text-muted-foreground mt-1">Purchased {formatDateShort(summary.purchaseDate)}</p>}
+          {summary?.acquisitionType && <Badge variant="secondary" className="mt-2 text-[10px]">{summary.acquisitionType.replace(/_/g, " ").toUpperCase()}</Badge>}
+        </div>
+        <div className="rounded-lg border p-4 bg-indigo-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Furnishing & Inventory</p>
+          <p className="text-xl font-bold text-indigo-700">{formatCurrency(summary?.inventoryValue)}</p>
+          <p className="text-xs text-muted-foreground mt-1">Physical assets</p>
         </div>
         <div className="rounded-lg border p-4 bg-orange-50/50">
           <p className="text-xs text-muted-foreground mb-1">Additional Expenses</p>
@@ -427,66 +414,73 @@ function InvestmentTab({ property }: { property: PropertyData }) {
         <div className="rounded-lg border p-4 bg-green-50/50">
           <p className="text-xs text-muted-foreground mb-1">Total Investment</p>
           <p className="text-xl font-bold text-green-700">{formatCurrency(summary?.totalInvestment)}</p>
-          <p className="text-xs text-muted-foreground mt-1">Asset value to date</p>
+          <p className="text-xs text-muted-foreground mt-1">Purchase + inventory + expenses</p>
         </div>
       </div>
 
-      {/* Category Breakdown */}
-      {summary?.categoryBreakdown && summary.categoryBreakdown.length > 0 && (
-        <div className="mb-8">
-          <h4 className="text-sm font-semibold mb-3">Expense Breakdown by Category</h4>
-          <div className="flex flex-wrap gap-2">
-            {summary.categoryBreakdown.map((cat) => {
-              const label = EXPENSE_CATEGORIES[cat.category] || cat.category;
-              const pct = totalExpenses > 0 ? ((parseFloat(cat.total) / totalExpenses) * 100).toFixed(0) : "0";
-              return (
-                <div key={cat.category} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
-                  <Badge className={CATEGORY_COLORS[cat.category] || "bg-gray-100 text-gray-700"}>{label}</Badge>
-                  <span className="font-medium">{formatCurrency(cat.total)}</span>
-                  <span className="text-muted-foreground text-xs">({pct}%)</span>
-                </div>
-              );
-            })}
-          </div>
+      {/* Revenue */}
+      <h4 className="text-sm font-semibold mb-3">Revenue</h4>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-emerald-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Revenue</p>
+          <p className="text-xl font-bold text-emerald-700">{formatCurrency(summary?.totalIncome)}</p>
+          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s)</p>
         </div>
-      )}
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
+          <p className="text-xl font-bold text-purple-700">-{formatCurrency(summary?.totalCommission)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-cyan-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Owner Payout</p>
+          <p className="text-xl font-bold text-cyan-700">{formatCurrency(summary?.totalOwnerPayout)}</p>
+        </div>
+      </div>
 
-      {/* Expenses List (Read-Only) */}
-      <div>
-        <h4 className="text-sm font-semibold mb-3">Expense History</h4>
-        {!expenses || expenses.length === 0 ? (
-          <div className="text-center py-12 border rounded-lg">
-            <DollarSign className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-muted-foreground text-sm">No expenses recorded yet.</p>
-          </div>
-        ) : (
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-muted/50 text-left">
-                  <th className="px-4 py-2 font-medium">Date</th>
-                  <th className="px-4 py-2 font-medium">Category</th>
-                  <th className="px-4 py-2 font-medium">Description</th>
-                  <th className="px-4 py-2 font-medium text-right">Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {expenses.map((exp: any) => (
-                  <tr key={exp.id} className="border-t">
-                    <td className="px-4 py-2.5 text-muted-foreground">{formatDateShort(exp.expenseDate)}</td>
-                    <td className="px-4 py-2.5">
-                      <Badge className={cn("text-[11px]", CATEGORY_COLORS[exp.category] || "bg-gray-100 text-gray-700")}>
-                        {EXPENSE_CATEGORIES[exp.category] || exp.category}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-2.5 truncate max-w-[200px]">{exp.description || "—"}</td>
-                    <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(exp.amount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* Costs & Net Profit */}
+      <h4 className="text-sm font-semibold mb-3">Costs & Net Profit</h4>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
+          <p className="text-lg font-bold text-purple-700">{formatCurrency(summary?.totalCommission)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-indigo-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Inventory</p>
+          <p className="text-lg font-bold text-indigo-700">{formatCurrency(summary?.inventoryValue)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-orange-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Expenses</p>
+          <p className="text-lg font-bold text-orange-700">{formatCurrency(summary?.totalExpenses)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-red-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Costs</p>
+          <p className="text-lg font-bold text-red-700">{formatCurrency(summary?.totalCosts)}</p>
+        </div>
+        <div className={`rounded-lg border p-4 ${parseFloat(summary?.netProfit || "0") >= 0 ? "bg-green-50/50" : "bg-red-50/50"}`}>
+          <p className="text-xs text-muted-foreground mb-1">Net Profit</p>
+          <p className={`text-xl font-bold ${parseFloat(summary?.netProfit || "0") >= 0 ? "text-green-700" : "text-red-700"}`}>{formatCurrency(summary?.netProfit)}</p>
+          <p className="text-xs text-muted-foreground mt-1">Revenue - Commission - Inventory - Expenses</p>
+        </div>
+      </div>
+
+      {/* Security Deposits */}
+      <h4 className="text-sm font-semibold mb-3">Security Deposits</h4>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div className="rounded-lg border p-4 bg-slate-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Collected</p>
+          <p className="text-xl font-bold text-slate-700">{formatCurrency(summary?.depositsCollected)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-amber-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Currently Held</p>
+          <p className="text-xl font-bold text-amber-700">{formatCurrency(summary?.depositsHeld)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-teal-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Returned</p>
+          <p className="text-xl font-bold text-teal-700">{formatCurrency(summary?.depositsReturned)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-red-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Forfeited</p>
+          <p className="text-xl font-bold text-red-700">{formatCurrency(summary?.depositsForfeited)}</p>
+        </div>
       </div>
     </div>
   );
@@ -764,6 +758,76 @@ function ActivityTab({ property }: { property: PropertyData }) {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Reviews Tab ──
+function ReviewsTab({ propertyId }: { propertyId: string }) {
+  const { data, isLoading } = useQuery<{ reviews: any[]; total: number; avgRating: string }>({
+    queryKey: [`/public/properties/${propertyId}/reviews`],
+    queryFn: () => api.get(`/public/properties/${propertyId}/reviews?limit=50`),
+  });
+
+  if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>;
+
+  const reviews = data?.reviews || [];
+  const avg = parseFloat(data?.avgRating || "0");
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      <div className="flex items-center gap-2 mb-1">
+        <Star className="h-5 w-5 text-primary" />
+        <h3 className="text-lg font-semibold">Guest Reviews</h3>
+      </div>
+      <Separator className="mb-6" />
+
+      <div className="flex items-center gap-6 mb-6">
+        <div className="text-center">
+          <p className="text-4xl font-bold">{avg > 0 ? avg.toFixed(1) : "—"}</p>
+          <div className="flex gap-0.5 mt-1 justify-center">
+            {[1, 2, 3, 4, 5].map(i => (
+              <Star key={i} className={`h-4 w-4 ${i <= Math.round(avg) ? "text-yellow-500 fill-yellow-500" : "text-gray-300"}`} />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">{data?.total || 0} review(s)</p>
+        </div>
+      </div>
+
+      {reviews.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <Star className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground">No reviews yet</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {reviews.map((r: any) => (
+            <div key={r.id} className="border rounded-lg p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="flex gap-0.5 mb-1">
+                    {[1, 2, 3, 4, 5].map(i => (
+                      <Star key={i} className={`h-4 w-4 ${i <= r.rating ? "text-yellow-500 fill-yellow-500" : "text-gray-300"}`} />
+                    ))}
+                  </div>
+                  {r.title && <p className="font-semibold">{r.title}</p>}
+                  {r.description && <p className="text-sm text-muted-foreground mt-1">{r.description}</p>}
+                </div>
+                <div className="text-right text-xs text-muted-foreground shrink-0">
+                  <p>{r.guestName || "Guest"}</p>
+                  <p>{r.createdAt ? new Date(r.createdAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : ""}</p>
+                </div>
+              </div>
+              {r.pmResponse && (
+                <div className="mt-3 bg-muted/50 rounded p-3 text-sm">
+                  <p className="text-xs font-semibold text-muted-foreground">PM Response</p>
+                  <p className="mt-0.5">{r.pmResponse}</p>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>

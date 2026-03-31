@@ -50,6 +50,8 @@ export default function HomePage() {
 
   // Search form
   const [searchArea, setSearchArea] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
   const [guests, setGuests] = useState("");
@@ -79,7 +81,7 @@ export default function HomePage() {
   return (
     <PublicLayout>
       {/* Hero */}
-      <section className="relative min-h-[500px] py-20 md:py-32 overflow-hidden">
+      <section className="relative min-h-[500px] py-20 md:py-32" style={{ overflow: "visible" }}>
         {/* Background image */}
         <div className="absolute inset-0 z-0">
           <img
@@ -100,24 +102,59 @@ export default function HomePage() {
           </div>
 
           {/* Search Bar */}
-          <div className="max-w-4xl mx-auto bg-card rounded-xl shadow-lg border p-4 md:p-6">
+          <div className="max-w-4xl mx-auto bg-card rounded-xl shadow-lg border p-4 md:p-6 relative z-30">
             <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-              <div className="md:col-span-2">
+              <div className="md:col-span-2 relative">
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
                   <MapPin className="h-3 w-3 inline mr-1" />
                   Location
                 </label>
                 <Input
-                  placeholder="City or area..."
-                  value={searchArea}
-                  onChange={(e) => setSearchArea(e.target.value)}
-                  list="area-list"
+                  placeholder="Search city or area..."
+                  value={searchQuery}
+                  onChange={(e) => { setSearchQuery(e.target.value); setDropdownOpen(true); }}
+                  onFocus={() => setDropdownOpen(true)}
                 />
-                <datalist id="area-list">
-                  {areas.map((a) => (
-                    <option key={a.id} value={a.city || a.name} />
-                  ))}
-                </datalist>
+                {dropdownOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setDropdownOpen(false)} />
+                    <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {searchArea && (
+                        <button
+                          className="w-full text-left px-3 py-2 text-sm text-muted-foreground hover:bg-muted flex items-center gap-2 border-b"
+                          onClick={() => { setSearchArea(""); setSearchQuery(""); setDropdownOpen(false); }}
+                        >
+                          Clear selection
+                        </button>
+                      )}
+                      {areas
+                        .filter(a => {
+                          const q = searchQuery.toLowerCase();
+                          return !q || a.name.toLowerCase().includes(q) || (a.city || "").toLowerCase().includes(q);
+                        })
+                        .map((a) => (
+                          <button
+                            key={a.id}
+                            className={`w-full text-left px-3 py-2.5 text-sm hover:bg-primary/5 flex items-center gap-2 transition-colors ${searchArea === (a.city || a.name) ? "bg-primary/10 font-medium" : ""}`}
+                            onClick={() => { setSearchArea(a.city || a.name); setSearchQuery(a.name); setDropdownOpen(false); }}
+                          >
+                            <MapPin className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                            <div>
+                              <p>{a.name}</p>
+                              {a.city && <p className="text-xs text-muted-foreground capitalize">{a.city}</p>}
+                            </div>
+                          </button>
+                        ))
+                      }
+                      {areas.filter(a => {
+                        const q = searchQuery.toLowerCase();
+                        return !q || a.name.toLowerCase().includes(q) || (a.city || "").toLowerCase().includes(q);
+                      }).length === 0 && (
+                        <p className="px-3 py-4 text-sm text-muted-foreground text-center">No areas found</p>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">

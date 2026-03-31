@@ -14,7 +14,8 @@ const STATUS_COLORS: Record<string, string> = {
   requested: "bg-yellow-500",
   confirmed: "bg-blue-500",
   checked_in: "bg-green-500",
-  checked_out: "bg-orange-400",
+  checked_out: "bg-gray-400",
+  completed: "bg-gray-400",
 };
 
 export default function CalendarOverview() {
@@ -105,6 +106,7 @@ export default function CalendarOverview() {
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-yellow-400" /> Requested</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-500" /> Confirmed</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-green-500" /> Checked In</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-gray-400" /> Past Booking</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-100 border border-red-300" /> Blocked</span>
       </div>
 

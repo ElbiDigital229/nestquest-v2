@@ -359,8 +359,14 @@ router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), a
       WHERE id = ${id}
     `);
 
-    // Notify the recipient
+    // Sync booking owner_payout_status if this is an owner_payout settlement
     const settlement = result.rows[0] as any;
+    if (settlement.reason === 'owner_payout' && settlement.booking_id) {
+      await db.execute(sql`
+        UPDATE st_bookings SET owner_payout_status = 'paid', updated_at = NOW()
+        WHERE id = ${settlement.booking_id}
+      `);
+    }
     // Get PM name for notification
     const pmNameResult = await db.execute(sql`SELECT full_name FROM guests WHERE user_id = ${resolvedId} LIMIT 1`);
     const pmName = (pmNameResult.rows[0] as any)?.full_name || "Property Manager";
@@ -1382,9 +1388,15 @@ router.get("/:id/investment-summary", requirePmPermission("financials.view"), as
     const depositResult = await db.execute(sql`
       SELECT
         COALESCE(SUM(sd.amount::decimal), 0) AS "totalCollected",
-        COALESCE(SUM(CASE WHEN sd.status IN ('returned', 'partially_returned') THEN COALESCE(sd.returned_amount::decimal, sd.amount::decimal) ELSE 0 END), 0) AS "totalReturned",
-        COALESCE(SUM(CASE WHEN sd.status = 'pending' OR sd.status = 'received' THEN sd.amount::decimal ELSE 0 END), 0) AS "currentlyHeld",
-        COALESCE(SUM(CASE WHEN sd.status = 'forfeited' THEN sd.amount::decimal ELSE 0 END), 0) AS "totalForfeited"
+        COALESCE(SUM(CASE WHEN sd.status IN ('returned', 'partially_returned') THEN COALESCE(sd.returned_amount::decimal, 0) ELSE 0 END), 0) AS "totalReturned",
+        COALESCE(SUM(CASE WHEN sd.status IN ('pending', 'received') THEN sd.amount::decimal ELSE 0 END), 0) AS "currentlyHeld",
+        COALESCE(SUM(
+          CASE
+            WHEN sd.status = 'forfeited' THEN sd.amount::decimal
+            WHEN sd.status = 'partially_returned' THEN sd.amount::decimal - COALESCE(sd.returned_amount::decimal, 0)
+            ELSE 0
+          END
+        ), 0) AS "totalForfeited"
       FROM st_security_deposits sd
       JOIN st_bookings b ON b.id = sd.booking_id
       WHERE b.property_id = ${id}
@@ -1622,31 +1634,7 @@ router.get("/:id/inventory", requirePmPermission("properties.view"), async (req:
 router.get("/:id/inventory-summary", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const result = await db.execute(sql`
-      SELECT
-        COUNT(*)::int AS "totalItems",
-        COALESCE(SUM(quantity), 0)::int AS "totalQuantity",
-        COALESCE(SUM(quantity * unit_cost::decimal), 0) AS "totalValue",
-        json_agg(json_build_object(
-          'category', sub.category,
-          'itemCount', sub.item_count,
-          'totalQuantity', sub.total_qty,
-          'totalCost', sub.total_cost
-        )) AS "categoryBreakdown"
-      FROM st_property_inventory WHERE property_id = ${id}
-      CROSS JOIN LATERAL (
-        SELECT category,
-          COUNT(*)::int AS item_count,
-          SUM(quantity)::int AS total_qty,
-          SUM(quantity * unit_cost::decimal) AS total_cost
-        FROM st_property_inventory
-        WHERE property_id = ${id}
-        GROUP BY category
-        ORDER BY SUM(quantity * unit_cost::decimal) DESC
-      ) sub
-    `);
 
-    // Simpler approach — separate queries
     const totals = await db.execute(sql`
       SELECT
         COUNT(*)::int AS "totalItems",
@@ -1781,7 +1769,7 @@ router.get("/:id/calendar-pricing", requirePmPermission("properties.view"), asyn
       WHERE b.property_id = ${id}
         AND b.check_out_date >= ${startDate}
         AND b.check_in_date <= ${endDate}
-        AND b.status IN ('requested', 'confirmed', 'checked_in', 'checked_out')
+        AND b.status IN ('requested', 'confirmed', 'checked_in', 'checked_out', 'completed')
       ORDER BY b.check_in_date
     `);
 

@@ -55,6 +55,29 @@ export default function AdminLogin() {
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
+            {import.meta.env.DEV && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                <p className="text-xs font-semibold text-amber-800 mb-2">Quick Login (Dev Only)</p>
+                <select
+                  className="w-full h-9 rounded-md border border-amber-300 bg-white px-3 text-sm"
+                  defaultValue=""
+                  onChange={async (e) => {
+                    if (!e.target.value) return;
+                    setIsLoading(true);
+                    try {
+                      await api.post("/auth/login", { email: "admin@nestquest.com", password: "Password1!", role: "SUPER_ADMIN" });
+                      await refreshUser();
+                      toast({ title: "Welcome, Admin" });
+                    } catch (err: any) {
+                      toast({ title: err.message, variant: "destructive" });
+                    } finally { setIsLoading(false); }
+                  }}
+                >
+                  <option value="">Select a test account...</option>
+                  <option value="admin">Admin — admin@nestquest.com</option>
+                </select>
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="email">Email Address</Label>
               <Input

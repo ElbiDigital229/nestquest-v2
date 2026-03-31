@@ -3,6 +3,8 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import SharedBookings from "@/pages/portal/my-bookings";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -349,7 +351,7 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "inventory" && <ViewInventory property={property} />}
           {activeTab === "investment" && <ViewInvestment property={property} />}
           {activeTab === "calendar" && <ViewCalendarPricing property={property} />}
-          {activeTab === "bookings" && <ViewBookings property={property} />}
+          {activeTab === "bookings" && <SharedBookings propertyId={property.id} embedded />}
           {activeTab === "transactions" && <ViewTransactions property={property} />}
           {activeTab === "reviews" && <ViewReviews property={property} />}
           {activeTab === "activity" && <ViewActivity property={property} />}
@@ -2087,10 +2089,13 @@ function ViewBookings({ property }: { property: StPropertyData }) {
                                 <Banknote className="h-3 w-3 mr-1" /> Payout
                               </Button>
                             )}
-                            {b.status === "completed" && (
+                            {b.status === "completed" && b.securityDepositAmount && !["returned", "partially_returned", "forfeited"].includes(b.depositStatus || "") && (
                               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setDepositBookingId(b.id); setDepositDialogOpen(true); }}>
                                 <RefreshCw className="h-3 w-3 mr-1" /> Deposit
                               </Button>
+                            )}
+                            {b.depositStatus && ["returned", "partially_returned", "forfeited"].includes(b.depositStatus) && (
+                              <span className="text-[10px] text-green-600">Deposit done</span>
                             )}
                           </div>
                         </td>
@@ -2729,7 +2734,7 @@ function ViewCalendarPricing({ property }: { property: StPropertyData }) {
           if (isSelected) bg = "bg-primary/10 border-primary ring-1 ring-primary";
           if (isPast) bg = "bg-gray-50 border-gray-200 opacity-50";
 
-          const statusMap: Record<string, string> = { requested: "REQ", confirmed: "CNF", checked_in: "IN", checked_out: "OUT" };
+          const statusMap: Record<string, string> = { requested: "REQ", confirmed: "CNF", checked_in: "IN", checked_out: "OUT", completed: "DONE" };
 
           return (
             <div

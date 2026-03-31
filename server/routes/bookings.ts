@@ -393,12 +393,17 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
       statusFilter = sql` AND b.status = ${sql.raw(`'${status}'::st_booking_status`)}`;
     }
 
-    // PM/team sees all bookings for their properties; others see only their own
+    // PM/team sees managed bookings; PO sees bookings for owned properties; Guest sees own
     const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
     const pmId = isPmOrTeam ? await getPmUserId(req) : userId;
-    const ownerFilter = isPmOrTeam
-      ? sql`(b.guest_user_id = ${userId} OR b.pm_user_id = ${pmId})`
-      : sql`b.guest_user_id = ${userId}`;
+    let ownerFilter;
+    if (isPmOrTeam) {
+      ownerFilter = sql`(b.guest_user_id = ${userId} OR b.pm_user_id = ${pmId})`;
+    } else if (userRole === "PROPERTY_OWNER") {
+      ownerFilter = sql`b.property_id IN (SELECT id FROM st_properties WHERE po_user_id = ${userId})`;
+    } else {
+      ownerFilter = sql`b.guest_user_id = ${userId}`;
+    }
 
     const result = await db.execute(sql`
       SELECT b.id, b.status, b.source,
@@ -410,6 +415,8 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
         b.access_pin AS "accessPin",
         b.created_at AS "createdAt", b.expires_at AS "expiresAt",
         b.confirmed_at AS "confirmedAt",
+        (SELECT sd.status FROM st_security_deposits sd WHERE sd.booking_id = b.id LIMIT 1) AS "depositStatus",
+        (SELECT s.status FROM pm_po_settlements s WHERE s.booking_id = b.id AND s.reason = 'owner_payout' LIMIT 1) AS "settlementStatus",
         p.id AS "propertyId", p.public_name AS "propertyName",
         p.city AS "propertyCity",
         a.name AS "areaName",
@@ -472,6 +479,36 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
+    // Get full guest profile for PM/PO/Admin (KYC view)
+    let guestProfile = null;
+    if ((isPm || isPo || userRole === "SUPER_ADMIN" || userRole === "PM_TEAM_MEMBER") && booking.guest_user_id) {
+      const guestResult = await db.execute(sql`
+        SELECT g.full_name AS "fullName", g.dob, g.nationality,
+          g.country_of_residence AS "countryOfResidence", g.resident_address AS "residentAddress",
+          g.emirates_id_number AS "emiratesIdNumber", g.emirates_id_expiry AS "emiratesIdExpiry",
+          g.emirates_id_front_url AS "emiratesIdFrontUrl", g.emirates_id_back_url AS "emiratesIdBackUrl",
+          g.passport_number AS "passportNumber", g.passport_expiry AS "passportExpiry",
+          g.passport_front_url AS "passportFrontUrl",
+          g.kyc_status AS "kycStatus",
+          u.email, u.phone, u.created_at AS "registeredAt"
+        FROM guests g
+        JOIN users u ON u.id = g.user_id
+        WHERE g.user_id = ${booking.guest_user_id}
+      `);
+      if (guestResult.rows.length > 0) guestProfile = guestResult.rows[0];
+
+      // Get guest documents
+      const guestDocs = await db.execute(sql`
+        SELECT ud.id, dt.label AS "documentName", dt.slug AS "documentType",
+          ud.file_url AS "fileUrl", ud.document_number AS "documentNumber",
+          ud.expiry_date AS "expiryDate"
+        FROM user_documents ud
+        JOIN document_types dt ON dt.id = ud.document_type_id
+        WHERE ud.user_id = ${booking.guest_user_id}
+      `);
+      if (guestProfile) (guestProfile as any).documents = guestDocs.rows;
+    }
+
     // Get review if exists
     const review = await db.execute(sql`
       SELECT id, rating, title, description, pm_response AS "pmResponse",
@@ -507,6 +544,7 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       guestName: booking.guest_full_name || booking.guest_name,
       guestEmail: booking.guest_email,
       guestPhone: booking.guest_phone,
+      guestProfile,
       pmName: booking.pm_name,
       source: booking.source,
       status: booking.status,
@@ -703,6 +741,8 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
         b.check_in_date AS "checkInDate", b.check_out_date AS "checkOutDate",
         b.number_of_guests AS "numberOfGuests", b.total_nights AS "totalNights",
         b.total_amount AS "totalAmount", b.security_deposit_amount AS "securityDepositAmount",
+        (SELECT sd.status FROM st_security_deposits sd WHERE sd.booking_id = b.id LIMIT 1) AS "depositStatus",
+        (SELECT s.status FROM pm_po_settlements s WHERE s.booking_id = b.id AND s.reason = 'owner_payout' LIMIT 1) AS "settlementStatus",
         b.payment_method AS "paymentMethod",
         b.payment_status AS "paymentStatus",
         b.owner_payout_amount AS "ownerPayoutAmount",
@@ -711,12 +751,19 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
         b.guest_name AS "guestName", b.guest_email AS "guestEmail",
         b.external_booking_ref AS "externalBookingRef",
         b.access_pin AS "accessPin",
+        b.cancellation_policy AS "cancellationPolicy",
         b.created_at AS "createdAt", b.expires_at AS "expiresAt",
         b.confirmed_at AS "confirmedAt", b.checked_in_at AS "checkedInAt",
         b.checked_out_at AS "checkedOutAt", b.completed_at AS "completedAt",
-        g.full_name AS "guestFullName"
+        g.full_name AS "guestFullName",
+        p.id AS "propertyId", p.public_name AS "propertyName", p.city AS "propertyCity",
+        a.name AS "areaName",
+        (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
+        (SELECT id FROM st_reviews WHERE booking_id = b.id LIMIT 1) AS "reviewId"
       FROM st_bookings b
       LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN areas a ON a.id = p.area_id
       WHERE b.property_id = ${propertyId}
       ${statusFilter}
       ORDER BY b.check_in_date DESC
@@ -758,7 +805,7 @@ router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER", "PM
       FROM st_bookings b
       LEFT JOIN guests g ON g.user_id = b.guest_user_id
       WHERE b.property_id = ${propertyId}
-      AND b.status IN ('requested', 'confirmed', 'checked_in')
+      AND b.status IN ('requested', 'confirmed', 'checked_in', 'checked_out', 'completed')
       AND b.check_in_date <= ${endDate}
       AND b.check_out_date >= ${startDate}
       ORDER BY b.check_in_date ASC
@@ -1431,6 +1478,23 @@ router.post("/:id/deposit/return", requireRole("PROPERTY_MANAGER"), async (req: 
       `Security deposit: AED ${returned.toFixed(2)} returned${totalDeductions > 0 ? `, AED ${totalDeductions.toFixed(2)} deducted` : ""}`,
       { bookingId: id, returned: returned.toFixed(2), deductions }
     );
+
+    // Auto-create settlement for forfeited amount (damage deduction)
+    if (totalDeductions > 0) {
+      const propResult = await db.execute(sql`SELECT po_user_id FROM st_properties WHERE id = ${booking.property_id}`);
+      const poId = (propResult.rows[0] as any)?.po_user_id;
+      if (poId) {
+        // Forfeited deposit is income — PM collected it, needs to settle with PO
+        await db.execute(sql`
+          INSERT INTO pm_po_settlements (id, booking_id, property_id, from_user_id, to_user_id, amount, reason, collected_by, status, notes, created_at, updated_at)
+          VALUES (gen_random_uuid()::text, ${id}, ${booking.property_id}, ${userId}, ${poId},
+            ${totalDeductions.toFixed(2)}, ${'deposit_forfeiture'},
+            'property_manager', 'pending',
+            ${(deductions || []).map((d: any) => `${d.reason}: AED ${d.amount}`).join(", ")},
+            NOW(), NOW())
+        `);
+      }
+    }
 
     return res.json({ status, returnedAmount: returned.toFixed(2) });
   } catch (error: any) {

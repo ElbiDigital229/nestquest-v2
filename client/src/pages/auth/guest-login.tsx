@@ -184,6 +184,41 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
         </CardHeader>
 
         <CardContent className="space-y-6">
+          {/* ── Dev Quick Login ──────────────────────── */}
+          {import.meta.env.DEV && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p className="text-xs font-semibold text-amber-800 mb-2">Quick Login (Dev Only)</p>
+              <select
+                className="w-full h-9 rounded-md border border-amber-300 bg-white px-3 text-sm"
+                defaultValue=""
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  if (!val) return;
+                  const [qEmail, qPassword, qRole] = val.split("|");
+                  setIsLoading(true);
+                  try {
+                    const loginRes = await api.post<{ user: { role: string } }>("/auth/login", { email: qEmail, password: qPassword, role: qRole });
+                    await refreshUser();
+                    toast({ title: `Logged in as ${qEmail}` });
+                    const defaultPath = loginRes.user?.role === "CLEANER" ? "/portal/cleaner-tasks" : "/portal/settings";
+                    navigate(returnTo || defaultPath);
+                  } catch (err: any) {
+                    toast({ title: err.message || "Login failed", variant: "destructive" });
+                  } finally {
+                    setIsLoading(false);
+                  }
+                }}
+              >
+                <option value="">Select a test account...</option>
+                <option value="pm@nestquest.com|Password1!|PROPERTY_MANAGER">PM — Ahmed Al Maktoum</option>
+                <option value="owner@nestquest.com|Password1!|PROPERTY_OWNER">PO — Fatima Al Nahyan</option>
+                <option value="guest@nestquest.com|Password1!|GUEST">Guest — James Wilson</option>
+                <option value="maria@guest.com|Password1!|GUEST">Guest — Maria Santos</option>
+                <option value="cleaner@nestquest.com|Password1!|PROPERTY_MANAGER">Cleaner — Ravi Kumar</option>
+              </select>
+            </div>
+          )}
+
           {/* ── SSO Buttons ──────────────────────────── */}
           <div className="grid grid-cols-3 gap-3">
             <Button variant="outline" className="w-full" onClick={() => handleSSO("Google")}>

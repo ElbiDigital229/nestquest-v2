@@ -75,12 +75,14 @@ const REASON_LABELS: Record<string, string> = {
   owner_payout: "Booking — Owner Payout",
   pm_commission: "Booking — PM Commission",
   expense_reimbursement: "Expense — Reimbursement",
+  deposit_forfeiture: "Deposit — Damage Deduction",
 };
 
 const REASON_COLORS: Record<string, string> = {
   owner_payout: "bg-blue-50 border-blue-200",
   pm_commission: "bg-purple-50 border-purple-200",
   expense_reimbursement: "bg-orange-50 border-orange-200",
+  deposit_forfeiture: "bg-red-50 border-red-200",
 };
 
 export default function SettlementsPage() {

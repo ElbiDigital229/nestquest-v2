@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -24,6 +25,7 @@ import {
   Moon,
   Key,
   XCircle,
+  CheckCircle,
   Star,
   Search,
   Home,
@@ -196,23 +198,31 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export default function MyBookings() {
+export default function MyBookings({ propertyId, embedded }: { propertyId?: string; embedded?: boolean } = {}) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
+  const isPmOrTeam = user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER";
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<FilterTab>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<BookingSummary | null>(null);
+  const [depositTarget, setDepositTarget] = useState<BookingSummary | null>(null);
+  const [depositReturnAmount, setDepositReturnAmount] = useState("");
+  const [depositDeductionReason, setDepositDeductionReason] = useState("");
+  const [depositDeductionAmount, setDepositDeductionAmount] = useState("");
 
-  // Fetch all bookings
+  // Fetch bookings — all or filtered by property
+  const queryKey = propertyId ? ["/bookings/property", propertyId] : ["/bookings/my"];
   const {
     data: bookings = [],
     isLoading,
   } = useQuery<BookingSummary[]>({
-    queryKey: ["/bookings/my"],
-    queryFn: () => api.get<BookingSummary[]>("/bookings/my"),
+    queryKey,
+    queryFn: () => propertyId
+      ? api.get<BookingSummary[]>(`/bookings/property/${propertyId}`)
+      : api.get<BookingSummary[]>("/bookings/my"),
   });
 
   // Fetch single booking detail when dialog opens
@@ -230,7 +240,7 @@ export default function MyBookings() {
     mutationFn: (id: string) => api.patch(`/bookings/${id}/cancel`),
     onSuccess: () => {
       toast({ title: "Booking cancelled", description: "Your booking has been cancelled." });
-      queryClient.invalidateQueries({ queryKey: ["/bookings/my"] });
+      queryClient.invalidateQueries({ queryKey });
       queryClient.invalidateQueries({ queryKey: ["/bookings", cancelTarget?.id] });
       setCancelTarget(null);
       setSelectedId(null);
@@ -247,12 +257,14 @@ export default function MyBookings() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <CalendarDays className="h-7 w-7 text-primary" />
-          <h1 className="text-2xl font-bold tracking-tight">My Bookings</h1>
+      {!embedded && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <CalendarDays className="h-7 w-7 text-primary" />
+            <h1 className="text-2xl font-bold tracking-tight">My Bookings</h1>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Filter Tabs */}
       <div className="flex gap-2 flex-wrap">
@@ -380,7 +392,36 @@ export default function MyBookings() {
 
                 {/* Action buttons row */}
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t" onClick={(e) => e.stopPropagation()}>
-                  {booking.status === "requested" && (
+                  {booking.status === "requested" && isPmOrTeam && (
+                    <>
+                      <Button
+                        size="sm"
+                        onClick={async () => {
+                          await api.patch(`/bookings/${booking.id}/confirm`);
+                          queryClient.invalidateQueries({ queryKey });
+                          queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                          toast({ title: "Booking confirmed" });
+                        }}
+                      >
+                        <CheckCircle className="h-4 w-4 mr-1" />
+                        Confirm
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={async () => {
+                          await api.patch(`/bookings/${booking.id}/decline`, { reason: "Declined by PM" });
+                          queryClient.invalidateQueries({ queryKey });
+                          queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                          toast({ title: "Booking declined" });
+                        }}
+                      >
+                        <XCircle className="h-4 w-4 mr-1" />
+                        Decline
+                      </Button>
+                    </>
+                  )}
+                  {booking.status === "requested" && !isPmOrTeam && (
                     <Button
                       variant="destructive"
                       size="sm"
@@ -391,6 +432,72 @@ export default function MyBookings() {
                     </Button>
                   )}
 
+                  {booking.status === "confirmed" && isPmOrTeam && (
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        const res = await api.patch(`/bookings/${booking.id}/check-in`, { notes: "" });
+                        queryClient.invalidateQueries({ queryKey });
+                        queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                        toast({ title: `Checked in${(res as any).accessPin ? ` — PIN: ${(res as any).accessPin}` : ""}` });
+                      }}
+                    >
+                      <Key className="h-4 w-4 mr-1" />
+                      Check In
+                    </Button>
+                  )}
+                  {booking.status === "checked_in" && isPmOrTeam && (
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        await api.patch(`/bookings/${booking.id}/check-out`, { notes: "" });
+                        queryClient.invalidateQueries({ queryKey });
+                        queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                        toast({ title: "Guest checked out" });
+                      }}
+                    >
+                      Check Out
+                    </Button>
+                  )}
+                  {booking.status === "checked_out" && isPmOrTeam && (
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        await api.patch(`/bookings/${booking.id}/complete`);
+                        queryClient.invalidateQueries({ queryKey });
+                        queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                        toast({ title: "Booking completed" });
+                      }}
+                    >
+                      Complete
+                    </Button>
+                  )}
+                  {(() => {
+                    const ds = (booking as any).depositStatus;
+                    const isProcessed = ds === "returned" || ds === "partially_returned" || ds === "forfeited";
+                    if (booking.status === "completed" && isPmOrTeam && booking.securityDepositAmount > 0) {
+                      if (isProcessed) {
+                        return <span className="text-xs text-green-600">Deposit processed</span>;
+                      }
+                      return (
+                        <Button size="sm" variant="outline" onClick={() => setDepositTarget(booking)}>
+                          Return Deposit
+                        </Button>
+                      );
+                    }
+                    return null;
+                  })()}
+                  {booking.status === "completed" && isPmOrTeam && (() => {
+                    const ss = (booking as any).settlementStatus;
+                    if (ss === "confirmed" || ss === "paid") {
+                      return <span className="text-xs text-green-600">Settled with PO</span>;
+                    }
+                    return (
+                      <Button size="sm" variant="outline" onClick={() => setLocation("/portal/settlements")}>
+                        Settle with PO
+                      </Button>
+                    );
+                  })()}
                   {booking.status === "confirmed" && (
                     <>
                       <Button
@@ -417,7 +524,7 @@ export default function MyBookings() {
                     </span>
                   )}
 
-                  {(booking.status === "completed" || booking.status === "checked_out") && !(booking as any).reviewId && (
+                  {(booking.status === "completed" || booking.status === "checked_out") && user?.role === "GUEST" && !(booking as any).reviewId && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -531,6 +638,83 @@ export default function MyBookings() {
                   {detail.totalNights} night{detail.totalNights !== 1 ? "s" : ""}
                 </span>
               </div>
+
+              {/* Guest Profile (PM/PO only) */}
+              {(detail as any).guestProfile && (
+                <>
+                  <Separator />
+                  <div>
+                    <h4 className="font-semibold mb-2">Guest Details</h4>
+                    <div className="bg-muted/50 rounded-lg p-4 space-y-3 text-sm">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><p className="text-muted-foreground text-xs">Full Name</p><p className="font-medium">{(detail as any).guestProfile.fullName}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Email</p><p className="font-medium">{(detail as any).guestProfile.email}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Phone</p><p className="font-medium">{(detail as any).guestProfile.phone || "—"}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Nationality</p><p className="font-medium">{(detail as any).guestProfile.nationality}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Country</p><p className="font-medium">{(detail as any).guestProfile.countryOfResidence}</p></div>
+                        <div><p className="text-muted-foreground text-xs">DOB</p><p className="font-medium">{(detail as any).guestProfile.dob ? new Date((detail as any).guestProfile.dob).toLocaleDateString("en-GB") : "—"}</p></div>
+                      </div>
+
+                      <Separator />
+                      <p className="text-xs font-semibold text-muted-foreground">IDENTIFICATION</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div><p className="text-muted-foreground text-xs">Emirates ID</p><p className="font-medium">{(detail as any).guestProfile.emiratesIdNumber || "—"}</p></div>
+                        <div><p className="text-muted-foreground text-xs">EID Expiry</p><p className="font-medium">{(detail as any).guestProfile.emiratesIdExpiry ? new Date((detail as any).guestProfile.emiratesIdExpiry).toLocaleDateString("en-GB") : "—"}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Passport</p><p className="font-medium">{(detail as any).guestProfile.passportNumber || "—"}</p></div>
+                        <div><p className="text-muted-foreground text-xs">Passport Expiry</p><p className="font-medium">{(detail as any).guestProfile.passportExpiry ? new Date((detail as any).guestProfile.passportExpiry).toLocaleDateString("en-GB") : "—"}</p></div>
+                      </div>
+
+                      {/* ID Images */}
+                      <div className="flex gap-3 flex-wrap">
+                        {(detail as any).guestProfile.emiratesIdFrontUrl && (
+                          <a href={(detail as any).guestProfile.emiratesIdFrontUrl} target="_blank" rel="noopener">
+                            <img src={(detail as any).guestProfile.emiratesIdFrontUrl} alt="EID Front" className="h-16 rounded border hover:opacity-80" />
+                          </a>
+                        )}
+                        {(detail as any).guestProfile.emiratesIdBackUrl && (
+                          <a href={(detail as any).guestProfile.emiratesIdBackUrl} target="_blank" rel="noopener">
+                            <img src={(detail as any).guestProfile.emiratesIdBackUrl} alt="EID Back" className="h-16 rounded border hover:opacity-80" />
+                          </a>
+                        )}
+                        {(detail as any).guestProfile.passportFrontUrl && (
+                          <a href={(detail as any).guestProfile.passportFrontUrl} target="_blank" rel="noopener">
+                            <img src={(detail as any).guestProfile.passportFrontUrl} alt="Passport" className="h-16 rounded border hover:opacity-80" />
+                          </a>
+                        )}
+                      </div>
+
+                      {/* KYC Status */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">KYC Status:</span>
+                        <Badge className={`text-[10px] border-0 ${
+                          (detail as any).guestProfile.kycStatus === "verified" ? "bg-green-100 text-green-800" :
+                          (detail as any).guestProfile.kycStatus === "pending" ? "bg-yellow-100 text-yellow-800" :
+                          "bg-red-100 text-red-800"
+                        }`}>{(detail as any).guestProfile.kycStatus}</Badge>
+                      </div>
+
+                      {/* Documents */}
+                      {(detail as any).guestProfile.documents?.length > 0 && (
+                        <>
+                          <Separator />
+                          <p className="text-xs font-semibold text-muted-foreground">UPLOADED DOCUMENTS</p>
+                          <div className="space-y-1">
+                            {(detail as any).guestProfile.documents.map((doc: any) => (
+                              <div key={doc.id} className="flex items-center justify-between text-xs">
+                                <span>{doc.documentName} {doc.documentNumber ? `(${doc.documentNumber})` : ""}</span>
+                                <div className="flex items-center gap-2">
+                                  {doc.expiryDate && <span className="text-muted-foreground">Exp: {new Date(doc.expiryDate).toLocaleDateString("en-GB")}</span>}
+                                  {doc.fileUrl && <a href={doc.fileUrl} target="_blank" rel="noopener" className="text-primary hover:underline">View</a>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
 
               <Separator />
 
@@ -743,6 +927,77 @@ export default function MyBookings() {
             >
               {cancelMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Yes, Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Deposit Return Dialog ─────────────────────────────────────── */}
+      <Dialog open={!!depositTarget} onOpenChange={(open) => { if (!open) { setDepositTarget(null); setDepositReturnAmount(""); setDepositDeductionReason(""); setDepositDeductionAmount(""); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Return Security Deposit</DialogTitle>
+            <DialogDescription>
+              Deposit held: <span className="font-semibold">AED {Number(depositTarget?.securityDepositAmount || 0).toLocaleString()}</span> for {depositTarget?.propertyName}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Return Amount (AED)</label>
+              <Input
+                type="number"
+                value={depositReturnAmount}
+                onChange={(e) => setDepositReturnAmount(e.target.value)}
+                placeholder={String(depositTarget?.securityDepositAmount || 0)}
+                max={Number(depositTarget?.securityDepositAmount || 0)}
+              />
+            </div>
+
+            {depositReturnAmount && Number(depositReturnAmount) < Number(depositTarget?.securityDepositAmount || 0) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                <p className="text-sm font-medium text-amber-800">
+                  Deduction: AED {(Number(depositTarget?.securityDepositAmount || 0) - Number(depositReturnAmount)).toFixed(2)}
+                </p>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Reason for deduction</label>
+                  <Input
+                    value={depositDeductionReason}
+                    onChange={(e) => setDepositDeductionReason(e.target.value)}
+                    placeholder="e.g. Broken coffee table"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setDepositTarget(null)}>Cancel</Button>
+            <Button
+              disabled={!depositReturnAmount || Number(depositReturnAmount) < 0}
+              onClick={async () => {
+                if (!depositTarget) return;
+                const returned = Number(depositReturnAmount);
+                const original = Number(depositTarget.securityDepositAmount);
+                const deductions = returned < original && depositDeductionReason
+                  ? [{ reason: depositDeductionReason, amount: (original - returned).toFixed(2) }]
+                  : [];
+                try {
+                  await api.post(`/bookings/${depositTarget.id}/deposit/return`, {
+                    returnedAmount: returned, deductions,
+                  });
+                  queryClient.invalidateQueries({ queryKey });
+                  queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                  toast({ title: `Deposit returned: AED ${returned.toFixed(2)}${deductions.length ? ` (AED ${deductions[0].amount} deducted)` : ""}` });
+                  setDepositTarget(null);
+                } catch (err: any) {
+                  toast({ title: err.message || "Failed to return deposit", variant: "destructive" });
+                }
+              }}
+            >
+              {Number(depositReturnAmount) < Number(depositTarget?.securityDepositAmount || 0)
+                ? "Partial Return"
+                : "Full Return"}
             </Button>
           </DialogFooter>
         </DialogContent>
