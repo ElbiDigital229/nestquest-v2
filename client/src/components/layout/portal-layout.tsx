@@ -62,6 +62,7 @@ const roleNavItems: Record<string, NavItem[]> = {
     { label: "Documents", href: "/portal/documents", icon: FileText },
     { label: "Reviews", href: "/portal/my-reviews", icon: Star },
     { label: "Settlements", href: "/portal/settlements", icon: Handshake },
+    { label: "My Reports", href: "/portal/po-reports", icon: BarChart3 },
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
   PM_TEAM_MEMBER: [

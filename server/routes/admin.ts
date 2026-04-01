@@ -114,23 +114,21 @@ router.get("/users/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const [guest] = await db
-      .select()
-      .from(guests)
-      .where(eq(guests.id, id))
-      .limit(1);
+    // Accept either users.id or guests.id for backward compat
+    let [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    let [guest] = user
+      ? await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1)
+      : [];
 
-    if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
+    // Fallback: try guests.id if not found by users.id
+    if (!user) {
+      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+      if (guest) {
+        [user] = await db.select().from(users).where(eq(users.id, guest.userId)).limit(1);
+      }
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, guest.userId))
-      .limit(1);
-
-    if (!user) {
+    if (!user || !guest) {
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -157,9 +155,13 @@ router.patch("/users/:id/profile", async (req: Request, res: Response) => {
     const { id } = req.params;
     const { fullName, dob, nationality, countryOfResidence, residentAddress, emiratesIdNumber, emiratesIdExpiry, phone, emiratesIdFrontUrl, emiratesIdBackUrl } = req.body;
 
-    const [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    // Find by users.id first, fallback to guests.id
+    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
     if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
+      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    }
+    if (!guest) {
+      return res.status(404).json({ error: "User profile not found" });
     }
 
     // Validate required fields are not blank if provided
@@ -249,14 +251,17 @@ router.patch("/users/:id/status", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    const [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    // Find by users.id first, fallback to guests.id
+    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
     if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
+      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    }
+    if (!guest) {
+      return res.status(404).json({ error: "User not found" });
     }
 
     await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, guest.userId));
 
-    // Audit log
     await db.insert(userAuditLog).values({
       userId: guest.userId,
       action: "STATUS_CHANGED",
@@ -265,7 +270,7 @@ router.patch("/users/:id/status", async (req: Request, res: Response) => {
       ipAddress: req.ip,
     });
 
-    return res.json({ message: `Guest status updated to ${status}` });
+    return res.json({ message: `User status updated to ${status}` });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -282,12 +287,16 @@ router.patch("/users/:id/kyc", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid KYC status" });
     }
 
-    const [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    // Find by users.id first, fallback to guests.id
+    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
     if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
+      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
+    }
+    if (!guest) {
+      return res.status(404).json({ error: "User profile not found" });
     }
 
-    await db.update(guests).set({ kycStatus, updatedAt: new Date() }).where(eq(guests.id, id));
+    await db.update(guests).set({ kycStatus, updatedAt: new Date() }).where(eq(guests.id, guest.id));
 
     const actionMap = { verified: "KYC_VERIFIED" as const, rejected: "KYC_REJECTED" as const, pending: "KYC_SUBMITTED" as const };
 

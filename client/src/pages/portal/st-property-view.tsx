@@ -61,6 +61,7 @@ import {
   UserCheck,
   XCircle,
   RefreshCw,
+  Key,
 } from "lucide-react";
 import {
   Dialog,
@@ -155,6 +156,7 @@ const TABS = [
   { key: "policies", name: "Policies", icon: ShieldCheck },
   { key: "owner", name: "Property Owner", icon: Users },
   { key: "agreement", name: "Agreement", icon: ClipboardCheck },
+  { key: "locks", name: "Smart Locks", icon: Key },
   { key: "inventory", name: "Inventory", icon: Package },
   { key: "investment", name: "Investment", icon: TrendingUp },
   { key: "calendar", name: "Calendar & Pricing", icon: CalendarDays },
@@ -348,6 +350,7 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "policies" && <ViewPolicies property={property} />}
           {activeTab === "owner" && <ViewOwner property={property} />}
           {activeTab === "agreement" && <ViewAgreement property={property} />}
+          {activeTab === "locks" && <ViewLocks property={property} />}
           {activeTab === "inventory" && <ViewInventory property={property} />}
           {activeTab === "investment" && <ViewInvestment property={property} />}
           {activeTab === "calendar" && <ViewCalendarPricing property={property} />}
@@ -1133,6 +1136,189 @@ function ExpenseDialog({
   );
 }
 
+// ─── Tab: Smart Locks ──────────────────────────────────────────────────────────
+
+const LOCK_BRANDS = ["Schlage", "Yale", "August", "Nuki", "Igloohome", "TTLock", "Samsung", "Other"];
+const LOCK_LOCATIONS = ["Front Door", "Back Door", "Gate", "Garage", "Safe Box", "Other"];
+
+function ViewLocks({ property }: { property: StPropertyData }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [addOpen, setAddOpen] = useState(false);
+  const [form, setForm] = useState({ name: "", brand: "", model: "", deviceId: "", location: "", apiKey: "" });
+
+  const { data: locks = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${property.id}/locks`],
+    queryFn: () => api.get(`/st-properties/${property.id}/locks`),
+  });
+
+  const { data: pinHistory = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${property.id}/lock-pins`],
+    queryFn: () => api.get(`/st-properties/${property.id}/lock-pins`),
+  });
+
+  const addMut = useMutation({
+    mutationFn: () => api.post(`/st-properties/${property.id}/locks`, form),
+    onSuccess: () => {
+      toast({ title: "Lock added" });
+      queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/locks`] });
+      setAddOpen(false);
+      setForm({ name: "", brand: "", model: "", deviceId: "", location: "", apiKey: "" });
+    },
+    onError: (e: any) => toast({ title: e.message, variant: "destructive" }),
+  });
+
+  const toggleMut = useMutation({
+    mutationFn: ({ lockId, isActive }: { lockId: string; isActive: boolean }) =>
+      api.patch(`/st-properties/${property.id}/locks/${lockId}`, { isActive }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/locks`] }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (lockId: string) => api.delete(`/st-properties/${property.id}/locks/${lockId}`),
+    onSuccess: () => { toast({ title: "Lock removed" }); queryClient.invalidateQueries({ queryKey: [`/st-properties/${property.id}/locks`] }); },
+  });
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-2">
+          <Key className="h-5 w-5 text-primary" />
+          <h3 className="text-lg font-semibold">Smart Locks</h3>
+        </div>
+        <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4 mr-1" /> Add Lock</Button>
+      </div>
+      <Separator className="mb-6" />
+
+      {/* Lock Cards */}
+      {locks.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <Key className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground">No smart locks configured.</p>
+          <p className="text-xs text-muted-foreground mt-1">Add a lock to auto-generate PINs for guests.</p>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 mb-8">
+          {locks.map((lock: any) => (
+            <Card key={lock.id}>
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="font-semibold flex items-center gap-2">
+                      {lock.name}
+                      <Badge className={`text-[10px] border-0 ${lock.isActive ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"}`}>
+                        {lock.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </p>
+                    <div className="text-sm text-muted-foreground mt-1 space-y-0.5">
+                      {lock.brand && <p>Brand: {lock.brand} {lock.model ? `— ${lock.model}` : ""}</p>}
+                      {lock.deviceId && <p>Device: <span className="font-mono text-xs">{lock.deviceId}</span></p>}
+                      {lock.location && <p>Location: {lock.location}</p>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">{lock.activePins} active PIN(s)</p>
+                  </div>
+                  <div className="flex gap-1">
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleMut.mutate({ lockId: lock.id, isActive: !lock.isActive })}>
+                      {lock.isActive ? <span className="text-xs">⏸</span> : <span className="text-xs">▶</span>}
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(lock.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* PIN History */}
+      {pinHistory.length > 0 && (
+        <>
+          <h4 className="text-sm font-semibold mb-3">PIN History</h4>
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/50 text-left">
+                  <th className="px-4 py-2 font-medium">PIN</th>
+                  <th className="px-4 py-2 font-medium">Guest</th>
+                  <th className="px-4 py-2 font-medium">Lock</th>
+                  <th className="px-4 py-2 font-medium">Valid From</th>
+                  <th className="px-4 py-2 font-medium">Valid Until</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pinHistory.map((p: any) => (
+                  <tr key={p.id} className="border-t">
+                    <td className="px-4 py-2.5 font-mono font-bold text-lg">{p.pin}</td>
+                    <td className="px-4 py-2.5">{p.guestName}<br /><span className="text-xs text-muted-foreground">{p.checkIn?.slice(0, 10)} – {p.checkOut?.slice(0, 10)}</span></td>
+                    <td className="px-4 py-2.5 text-muted-foreground">{p.lockName}<br /><span className="text-xs">{p.lockLocation}</span></td>
+                    <td className="px-4 py-2.5 text-xs">{p.validFrom ? new Date(p.validFrom).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                    <td className="px-4 py-2.5 text-xs">{p.validUntil ? new Date(p.validUntil).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                    <td className="px-4 py-2.5">
+                      <Badge className={`text-[10px] border-0 ${p.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"}`}>{p.status}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* Add Lock Dialog */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Add Smart Lock</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label>Lock Name <span className="text-destructive">*</span></Label>
+              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Front Door Lock" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Brand</Label>
+                <select value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))}
+                  className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm">
+                  <option value="">Select...</option>
+                  {LOCK_BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Model</Label>
+                <Input value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="e.g. Encode Plus" />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Device ID</Label>
+              <Input value={form.deviceId} onChange={e => setForm(f => ({ ...f, deviceId: e.target.value }))} placeholder="e.g. SCHLAGE-MG1-2304" className="font-mono" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Location</Label>
+              <select value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm">
+                <option value="">Select...</option>
+                {LOCK_LOCATIONS.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>API Key (optional)</Label>
+              <Input value={form.apiKey} onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))} placeholder="For future lock API integration" type="password" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button disabled={!form.name.trim() || addMut.isPending} onClick={() => addMut.mutate()}>
+              {addMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Add Lock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // ─── Tab: Inventory ──────────────────────────────────────────────────────────
 
 const INVENTORY_CATEGORIES = [
@@ -1465,9 +1651,9 @@ function ViewInvestment({ property }: { property: StPropertyData }) {
       <h4 className="text-sm font-semibold mb-3">Revenue</h4>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="rounded-lg border p-4 bg-emerald-50/50">
-          <p className="text-xs text-muted-foreground mb-1">Total Revenue</p>
+          <p className="text-xs text-muted-foreground mb-1">Rental Revenue</p>
           <p className="text-xl font-bold text-emerald-700">{formatCurrency(summary?.totalIncome)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s)</p>
+          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s) — excl. deposits</p>
         </div>
         <div className="rounded-lg border p-4 bg-purple-50/50">
           <p className="text-xs text-muted-foreground mb-1">PM Commission</p>

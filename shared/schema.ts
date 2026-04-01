@@ -55,7 +55,9 @@ export const users = pgTable("users", {
 
 // ── Guests ─────────────────────────────────────────────
 
-export const guests = pgTable("guests", {
+// User profiles (KYC data for all portal users — PM, PO, Guest, Tenant)
+// Legacy table name "guests" in DB, exported as both names for backward compat
+export const userProfiles = pgTable("guests", {
   id: varchar("id", { length: 36 })
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
@@ -88,6 +90,9 @@ export const guests = pgTable("guests", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Backward-compatible alias — all existing code imports "guests"
+export const guests = userProfiles;
 
 // ── OTP Verifications ──────────────────────────────────
 
@@ -896,6 +901,16 @@ export const signupSchema = z.object({
   emiratesIdFrontUrl: z.string().min(1, "ID card front image is required"),
   emiratesIdBackUrl: z.string().min(1, "ID card back image is required"),
   role: z.enum(["GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER", "TENANT"]),
+  // Optional fields — passport, trade license, company
+  passportNumber: z.string().optional().nullable(),
+  passportExpiry: z.string().optional().nullable(),
+  passportFrontUrl: z.string().optional().nullable(),
+  tradeLicenseExpiry: z.string().optional().nullable(),
+  tradeLicenseUrl: z.string().optional().nullable(),
+  companyName: z.string().optional().nullable(),
+  companyWebsite: z.string().optional().nullable(),
+  companyDescription: z.string().optional().nullable(),
+  companyAddress: z.string().optional().nullable(),
 });
 
 export const loginSchema = z.object({
@@ -908,8 +923,11 @@ export const loginSchema = z.object({
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-export type Guest = typeof guests.$inferSelect;
-export type InsertGuest = typeof guests.$inferInsert;
+export type UserProfile = typeof userProfiles.$inferSelect;
+export type InsertUserProfile = typeof userProfiles.$inferInsert;
+// Backward compat
+export type Guest = UserProfile;
+export type InsertGuest = InsertUserProfile;
 export type AuditLog = typeof userAuditLog.$inferSelect;
 export type InsertAuditLog = typeof userAuditLog.$inferInsert;
 export type PmPoLink = typeof pmPoLinks.$inferSelect;

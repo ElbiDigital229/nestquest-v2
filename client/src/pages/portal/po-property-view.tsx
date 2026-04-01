@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { api } from "@/lib/api";
+import SharedBookings from "@/pages/portal/my-bookings";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,8 @@ import {
   Activity,
   CalendarDays,
   Star,
+  Package,
+  Receipt,
   MapPin,
   BedDouble,
   Bath,
@@ -80,8 +83,11 @@ const TABS = [
   { key: "amenities", name: "Amenities", icon: Sparkles },
   { key: "pricing", name: "Pricing", icon: DollarSign },
   { key: "policies", name: "Policies", icon: ShieldCheck },
+  { key: "inventory", name: "Inventory", icon: Package },
   { key: "investment", name: "Investment", icon: TrendingUp },
+  { key: "calendar", name: "Calendar", icon: CalendarDays },
   { key: "bookings", name: "Bookings", icon: CalendarDays },
+  { key: "transactions", name: "Transactions", icon: Receipt },
   { key: "reviews", name: "Reviews", icon: Star },
   { key: "activity", name: "Activity Log", icon: Activity },
 ] as const;
@@ -229,8 +235,11 @@ export default function PoPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "amenities" && <AmenitiesTab property={property} />}
           {activeTab === "pricing" && <PricingTab property={property} />}
           {activeTab === "policies" && <PoliciesTab property={property} />}
+          {activeTab === "inventory" && <InventoryTab propertyId={property.id} />}
           {activeTab === "investment" && <InvestmentTab property={property} />}
-          {activeTab === "bookings" && <ViewBookings property={property} />}
+          {activeTab === "calendar" && <CalendarTab propertyId={property.id} />}
+          {activeTab === "bookings" && <SharedBookings propertyId={property.id} embedded />}
+          {activeTab === "transactions" && <TransactionsTab propertyId={property.id} />}
           {activeTab === "reviews" && <ReviewsTab propertyId={property.id} />}
           {activeTab === "activity" && <ActivityTab property={property} />}
         </div>
@@ -422,9 +431,9 @@ function InvestmentTab({ property }: { property: PropertyData }) {
       <h4 className="text-sm font-semibold mb-3">Revenue</h4>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="rounded-lg border p-4 bg-emerald-50/50">
-          <p className="text-xs text-muted-foreground mb-1">Total Revenue</p>
+          <p className="text-xs text-muted-foreground mb-1">Rental Revenue</p>
           <p className="text-xl font-bold text-emerald-700">{formatCurrency(summary?.totalIncome)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s)</p>
+          <p className="text-xs text-muted-foreground mt-1">{summary?.bookingCount || 0} booking(s) — excl. deposits</p>
         </div>
         <div className="rounded-lg border p-4 bg-purple-50/50">
           <p className="text-xs text-muted-foreground mb-1">PM Commission</p>
@@ -482,6 +491,283 @@ function InvestmentTab({ property }: { property: PropertyData }) {
           <p className="text-xl font-bold text-red-700">{formatCurrency(summary?.depositsForfeited)}</p>
         </div>
       </div>
+
+      {/* Expense Category Breakdown */}
+      {summary?.categoryBreakdown?.length > 0 && (
+        <div className="mb-8">
+          <h4 className="text-sm font-semibold mb-3">Expense Breakdown by Category</h4>
+          <div className="flex flex-wrap gap-2">
+            {summary.categoryBreakdown.map((cat: any) => {
+              const pct = parseFloat(summary.totalExpenses) > 0 ? ((parseFloat(cat.totalCost) / parseFloat(summary.totalExpenses)) * 100).toFixed(0) : "0";
+              return (
+                <div key={cat.category} className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+                  <Badge className="bg-gray-100 text-gray-700">{cat.category}</Badge>
+                  <span className="font-medium">{formatCurrency(cat.totalCost)}</span>
+                  <span className="text-muted-foreground text-xs">({pct}%)</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Transaction History */}
+      <PoTransactionHistory propertyId={property.id} />
+    </div>
+  );
+}
+
+// ── PO Transaction History ──
+function PoTransactionHistory({ propertyId }: { propertyId: string }) {
+  const { data: transactions = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${propertyId}/transactions`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/transactions`),
+  });
+
+  const TX_STYLES: Record<string, string> = {
+    purchase: "bg-blue-100 text-blue-800",
+    expense: "bg-orange-100 text-orange-800",
+    booking_income: "bg-emerald-100 text-emerald-800",
+    security_deposit_in: "bg-amber-100 text-amber-800",
+    security_deposit_out: "bg-teal-100 text-teal-800",
+    security_deposit_forfeited: "bg-red-100 text-red-800",
+    commission: "bg-purple-100 text-purple-800",
+  };
+
+  return (
+    <div>
+      <h4 className="text-sm font-semibold mb-3">Transaction History</h4>
+      {transactions.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <DollarSign className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground text-sm">No transactions recorded yet.</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 text-left">
+                <th className="px-4 py-2 font-medium">Date</th>
+                <th className="px-4 py-2 font-medium">Type</th>
+                <th className="px-4 py-2 font-medium">Description</th>
+                <th className="px-4 py-2 font-medium text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transactions.map((tx: any) => {
+                const amountStr = tx.amount?.toString() || "0";
+                const isPositive = amountStr.startsWith("+");
+                const isNegative = amountStr.startsWith("-");
+                const isHold = tx.direction === "hold";
+                const amountColor = isPositive ? "text-emerald-700" : isNegative ? "text-red-700" : isHold ? "text-amber-700" : "";
+                const displayAmount = isHold
+                  ? `AED ${parseFloat(amountStr).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} (held)`
+                  : `${isPositive ? "+" : isNegative ? "-" : ""}AED ${Math.abs(parseFloat(amountStr)).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+                return (
+                  <tr key={tx.id} className="border-t hover:bg-accent/30">
+                    <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{tx.date ? formatDateShort(tx.date) : "—"}</td>
+                    <td className="px-4 py-2.5"><Badge className={cn("text-[11px] border-0", TX_STYLES[tx.type] || "bg-gray-100 text-gray-700")}>{tx.category}</Badge></td>
+                    <td className="px-4 py-2.5 truncate max-w-[250px]">{tx.description || "—"}</td>
+                    <td className={cn("px-4 py-2.5 text-right font-semibold whitespace-nowrap", amountColor)}>{displayAmount}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inventory Tab (Read-Only for PO) ──
+function InventoryTab({ propertyId }: { propertyId: string }) {
+  const { data: items = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${propertyId}/inventory`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/inventory`),
+  });
+  const { data: summary } = useQuery<any>({
+    queryKey: [`/st-properties/${propertyId}/inventory-summary`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/inventory-summary`),
+  });
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center gap-2 mb-1">
+        <Package className="h-5 w-5 text-primary" />
+        <h3 className="text-lg font-semibold">Inventory</h3>
+      </div>
+      <Separator className="mb-6" />
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="rounded-lg border p-4 bg-blue-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Value</p>
+          <p className="text-xl font-bold text-blue-700">{formatCurrency(summary?.totalValue)}</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-emerald-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Total Items</p>
+          <p className="text-xl font-bold text-emerald-700">{summary?.totalItems || 0} items ({summary?.totalQuantity || 0} units)</p>
+        </div>
+        <div className="rounded-lg border p-4 bg-purple-50/50">
+          <p className="text-xs text-muted-foreground mb-1">Categories</p>
+          <p className="text-xl font-bold text-purple-700">{summary?.categoryBreakdown?.length || 0}</p>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-center py-12 border rounded-lg">
+          <Package className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-muted-foreground text-sm">No inventory items yet.</p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-muted/50 text-left">
+                <th className="px-4 py-2 font-medium">Item</th>
+                <th className="px-4 py-2 font-medium">Category</th>
+                <th className="px-4 py-2 font-medium text-center">Qty</th>
+                <th className="px-4 py-2 font-medium text-right">Unit Cost</th>
+                <th className="px-4 py-2 font-medium text-right">Total</th>
+                <th className="px-4 py-2 font-medium">Condition</th>
+                <th className="px-4 py-2 font-medium">Location</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item: any) => (
+                <tr key={item.id} className="border-t">
+                  <td className="px-4 py-2.5"><p className="font-medium">{item.name}</p>{item.notes && <p className="text-xs text-muted-foreground">{item.notes}</p>}</td>
+                  <td className="px-4 py-2.5"><Badge variant="secondary" className="text-[10px]">{item.category}</Badge></td>
+                  <td className="px-4 py-2.5 text-center">{item.quantity}</td>
+                  <td className="px-4 py-2.5 text-right">{formatCurrency(item.unitCost)}</td>
+                  <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(item.totalCost)}</td>
+                  <td className="px-4 py-2.5">{item.condition}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{item.location || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Calendar Tab (Read-Only for PO) ──
+function CalendarTab({ propertyId }: { propertyId: string }) {
+  const [currentMonth, setCurrentMonth] = useState(() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() }; });
+
+  const startDate = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-01`;
+  const endD = new Date(currentMonth.year, currentMonth.month + 1, 0);
+  const endDate = `${endD.getFullYear()}-${String(endD.getMonth() + 1).padStart(2, "0")}-${String(endD.getDate()).padStart(2, "0")}`;
+
+  const { data } = useQuery<any>({
+    queryKey: [`/st-properties/${propertyId}/calendar-pricing`, startDate],
+    queryFn: () => api.get(`/st-properties/${propertyId}/calendar-pricing?from=${startDate}&to=${endDate}`),
+  });
+
+  const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const today = fmtDate(new Date());
+  const defaults = data?.defaults || {};
+  const defaultNightly = parseFloat(defaults.nightlyRate || "0");
+  const defaultWeekend = parseFloat(defaults.weekendRate || defaults.nightlyRate || "0");
+
+  const bookingMap = new Map<string, any>();
+  (data?.bookings || []).forEach((b: any) => {
+    const s = new Date(b.checkIn.slice(0, 10) + "T12:00:00");
+    const e = new Date(b.checkOut.slice(0, 10) + "T12:00:00");
+    for (let d = new Date(s); d < e; d.setDate(d.getDate() + 1)) bookingMap.set(fmtDate(d), b);
+  });
+  const blockedSet = new Set<string>();
+  (data?.blocked || []).forEach((bl: any) => {
+    const s = new Date((bl.startDate || "").slice(0, 10) + "T12:00:00");
+    const e = new Date((bl.endDate || "").slice(0, 10) + "T12:00:00");
+    for (let d = new Date(s); d < e; d.setDate(d.getDate() + 1)) blockedSet.add(fmtDate(d));
+  });
+  const pricingMap = new Map<string, any>();
+  (data?.pricing || []).forEach((p: any) => pricingMap.set(typeof p.date === "string" ? p.date.slice(0, 10) : fmtDate(new Date(p.date)), p));
+
+  const firstDay = new Date(currentMonth.year, currentMonth.month, 1).getDay();
+  const daysInMonth = new Date(currentMonth.year, currentMonth.month + 1, 0).getDate();
+  const monthName = new Date(currentMonth.year, currentMonth.month).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center gap-2 mb-1"><CalendarDays className="h-5 w-5 text-primary" /><h3 className="text-lg font-semibold">Calendar</h3></div>
+      <Separator className="mb-4" />
+      <div className="flex items-center justify-between mb-3">
+        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setCurrentMonth(m => m.month === 0 ? { year: m.year - 1, month: 11 } : { year: m.year, month: m.month - 1 })}>← Prev</button>
+        <h4 className="text-base font-semibold">{monthName}</h4>
+        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setCurrentMonth(m => m.month === 11 ? { year: m.year + 1, month: 0 } : { year: m.year, month: m.month + 1 })}>Next →</button>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(d => <div key={d} className="text-center text-xs font-semibold text-muted-foreground py-1">{d}</div>)}
+        {Array.from({ length: firstDay }, (_, i) => <div key={`e-${i}`} className="min-h-[70px]" />)}
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          const day = i + 1;
+          const dateStr = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const isWeekend = new Date(currentMonth.year, currentMonth.month, day).getDay() === 5 || new Date(currentMonth.year, currentMonth.month, day).getDay() === 6;
+          const booking = bookingMap.get(dateStr);
+          const isBlocked = blockedSet.has(dateStr);
+          const customPrice = pricingMap.get(dateStr);
+          const price = customPrice ? parseFloat(customPrice.price) : (isWeekend ? defaultWeekend : defaultNightly);
+          let bg = "bg-green-50 border-green-200";
+          if (booking) bg = booking.status === "completed" || booking.status === "checked_out" ? "bg-gray-100 border-gray-300" : "bg-blue-50 border-blue-200";
+          if (isBlocked) bg = "bg-red-50 border-red-200";
+          if (customPrice && !booking && !isBlocked) bg = "bg-amber-50 border-amber-200";
+
+          return (
+            <div key={dateStr} className={`min-h-[70px] border rounded-md p-1.5 text-xs ${bg}`}>
+              <div className="flex justify-between"><span className={`font-semibold ${dateStr === today ? "text-primary" : ""}`}>{day}</span>{isWeekend && <span className="text-[9px] text-muted-foreground">WE</span>}</div>
+              <p className="font-bold mt-0.5 text-gray-700">{price > 0 ? price : "—"}</p>
+              {booking && <p className="truncate text-[10px] text-blue-700 font-medium">{booking.guestName}</p>}
+              {isBlocked && <p className="text-[10px] text-red-600">Blocked</p>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Transactions Tab (Read-Only for PO) ──
+function TransactionsTab({ propertyId }: { propertyId: string }) {
+  const { data: expenses = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${propertyId}/expenses`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/expenses`),
+  });
+
+  return (
+    <div className="max-w-5xl mx-auto p-6">
+      <div className="flex items-center gap-2 mb-1"><Receipt className="h-5 w-5 text-primary" /><h3 className="text-lg font-semibold">Transactions</h3></div>
+      <Separator className="mb-6" />
+
+      <PoTransactionHistory propertyId={propertyId} />
+
+      <Separator className="my-6" />
+      <h4 className="text-sm font-semibold mb-3">Expenses</h4>
+      {expenses.length === 0 ? (
+        <div className="text-center py-8 border rounded-lg"><p className="text-sm text-muted-foreground">No expenses recorded.</p></div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead><tr className="bg-muted/50 text-left"><th className="px-4 py-2 font-medium">Date</th><th className="px-4 py-2 font-medium">Category</th><th className="px-4 py-2 font-medium">Description</th><th className="px-4 py-2 font-medium">Responsible</th><th className="px-4 py-2 font-medium">Status</th><th className="px-4 py-2 font-medium text-right">Amount</th></tr></thead>
+            <tbody>
+              {expenses.map((exp: any) => (
+                <tr key={exp.id} className="border-t">
+                  <td className="px-4 py-2.5 text-muted-foreground">{formatDateShort(exp.expenseDate)}</td>
+                  <td className="px-4 py-2.5"><Badge variant="secondary" className="text-[10px]">{exp.category?.replace(/_/g, " ")}</Badge></td>
+                  <td className="px-4 py-2.5">{exp.description || "—"}</td>
+                  <td className="px-4 py-2.5 text-xs">{exp.responsibleParty?.replace(/_/g, " ") || "—"}</td>
+                  <td className="px-4 py-2.5"><Badge className={`text-[10px] border-0 ${exp.paymentStatus === "paid" ? "bg-green-100 text-green-800" : "bg-yellow-100 text-yellow-800"}`}>{exp.paymentStatus || "unpaid"}</Badge></td>
+                  <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(exp.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

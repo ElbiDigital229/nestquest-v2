@@ -76,6 +76,7 @@ const REASON_LABELS: Record<string, string> = {
   pm_commission: "Booking — PM Commission",
   expense_reimbursement: "Expense — Reimbursement",
   deposit_forfeiture: "Deposit — Damage Deduction",
+  guest_refund: "Cancellation — Guest Refund",
 };
 
 const REASON_COLORS: Record<string, string> = {
@@ -83,6 +84,7 @@ const REASON_COLORS: Record<string, string> = {
   pm_commission: "bg-purple-50 border-purple-200",
   expense_reimbursement: "bg-orange-50 border-orange-200",
   deposit_forfeiture: "bg-red-50 border-red-200",
+  guest_refund: "bg-pink-50 border-pink-200",
 };
 
 export default function SettlementsPage() {

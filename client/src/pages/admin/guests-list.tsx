@@ -397,7 +397,7 @@ export default function AdminGuestsList() {
                       <TableRow
                         key={guest.id}
                         className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => navigate(`/admin/users/${guest.id}`)}
+                        onClick={() => navigate(`/admin/users/${guest.userId || guest.id}`)}
                       >
                         <TableCell className="font-medium">{guest.fullName || "N/A"}</TableCell>
                         <TableCell className="text-muted-foreground text-sm">{ROLE_LABELS[guest.role] || guest.role}</TableCell>

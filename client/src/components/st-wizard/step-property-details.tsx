@@ -734,20 +734,65 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
           </div>
 
           {accessType === "smart_lock" && (
-            <div className="space-y-1.5">
-              <Label>
-                Lock Device ID <span className="text-destructive">*</span>
-              </Label>
-              <Input
-                value={lockDeviceId}
-                onChange={(e) => setLockDeviceId(e.target.value)}
-                onBlur={() => handleBlur("lockDeviceId", lockDeviceId)}
-                placeholder="Enter device ID"
-              />
-            </div>
+            <SmartLockSelector
+              propertyId={property.id}
+              lockDeviceId={lockDeviceId}
+              onSelect={(v) => { setLockDeviceId(v); updateField("lockDeviceId", v); }}
+            />
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+// ── Smart Lock Selector ──
+function SmartLockSelector({ propertyId, lockDeviceId, onSelect }: { propertyId: string; lockDeviceId: string; onSelect: (v: string) => void }) {
+  const { data: locks = [] } = useQuery<any[]>({
+    queryKey: [`/st-properties/${propertyId}/locks`],
+    queryFn: () => api.get(`/st-properties/${propertyId}/locks`).catch(() => []),
+    enabled: !!propertyId,
+  });
+
+  const activeLocks = locks.filter((l: any) => l.isActive);
+
+  if (activeLocks.length === 0) {
+    return (
+      <div className="space-y-1.5">
+        <Label>Lock Device ID <span className="text-destructive">*</span></Label>
+        <Input
+          value={lockDeviceId}
+          onChange={(e) => onSelect(e.target.value)}
+          placeholder="Enter device ID"
+        />
+        <p className="text-xs text-muted-foreground">
+          No smart locks configured. Add locks via the Smart Locks tab, or enter a device ID manually.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Label>Smart Lock <span className="text-destructive">*</span></Label>
+      <Select
+        value={lockDeviceId}
+        onValueChange={onSelect}
+      >
+        <SelectTrigger>
+          <SelectValue placeholder="Select a smart lock..." />
+        </SelectTrigger>
+        <SelectContent>
+          {activeLocks.map((lock: any) => (
+            <SelectItem key={lock.deviceId || lock.id} value={lock.deviceId || lock.id}>
+              {lock.name} {lock.brand ? `(${lock.brand})` : ""} — {lock.location || "No location"}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {activeLocks.length} lock(s) available. Manage locks in the Smart Locks tab.
+      </p>
     </div>
   );
 }

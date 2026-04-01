@@ -330,6 +330,37 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
         </div>
       )}
 
+      {/* Summary bar */}
+      {!isLoading && filtered.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {(() => {
+            const totalReceived = filtered.reduce((s, b) => s + Number(b.totalAmount || 0), 0);
+            const totalDeposits = filtered.reduce((s, b) => s + Number(b.securityDepositAmount || 0), 0);
+            const revenue = totalReceived - totalDeposits;
+            return (
+              <>
+                <div className="rounded-lg border p-3 bg-emerald-50/50">
+                  <p className="text-[10px] text-muted-foreground">Rental Revenue</p>
+                  <p className="text-lg font-bold text-emerald-700">{formatCurrency(revenue)}</p>
+                </div>
+                <div className="rounded-lg border p-3 bg-amber-50/50">
+                  <p className="text-[10px] text-muted-foreground">Security Deposits</p>
+                  <p className="text-lg font-bold text-amber-700">{formatCurrency(totalDeposits)}</p>
+                </div>
+                <div className="rounded-lg border p-3 bg-blue-50/50">
+                  <p className="text-[10px] text-muted-foreground">Total Received</p>
+                  <p className="text-lg font-bold text-blue-700">{formatCurrency(totalReceived)}</p>
+                </div>
+                <div className="rounded-lg border p-3 bg-purple-50/50">
+                  <p className="text-[10px] text-muted-foreground">Bookings</p>
+                  <p className="text-lg font-bold text-purple-700">{filtered.length}</p>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       {/* Booking cards */}
       {!isLoading && filtered.length > 0 && (
         <div className="space-y-4">
@@ -802,15 +833,41 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                 </>
               )}
 
-              {/* Access pin */}
-              {detail.smartHome && detail.accessPin && detail.status === "checked_in" && (
+              {/* Access pin + Lock info */}
+              {detail.accessPin && (
                 <>
                   <Separator />
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-center gap-2">
-                    <Key className="h-5 w-5 text-green-600" />
-                    <div>
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Key className="h-5 w-5 text-green-600" />
                       <p className="font-semibold text-green-800 text-sm">Access PIN</p>
-                      <p className="font-mono text-lg text-green-700">{detail.accessPin}</p>
+                    </div>
+                    <p className="font-mono text-2xl text-green-700 mb-1">{detail.accessPin}</p>
+                    {detail.status === "checked_in" && <Badge className="text-[10px] bg-green-100 text-green-800 border-0">Active</Badge>}
+                    {(detail.status === "checked_out" || detail.status === "completed") && <Badge className="text-[10px] bg-gray-100 text-gray-600 border-0">Expired</Badge>}
+                  </div>
+                </>
+              )}
+              {(detail as any).lockPins?.length > 0 && (
+                <>
+                  <Separator />
+                  <div className="text-sm">
+                    <h4 className="font-semibold mb-2">Lock PIN History</h4>
+                    <div className="space-y-2">
+                      {(detail as any).lockPins.map((lp: any) => (
+                        <div key={lp.id} className="bg-muted/50 rounded-lg p-3 flex items-center justify-between">
+                          <div>
+                            <p className="font-mono font-bold text-lg">{lp.pin}</p>
+                            <p className="text-xs text-muted-foreground">{lp.lockName} {lp.lockLocation ? `— ${lp.lockLocation}` : ""}</p>
+                            <p className="text-xs text-muted-foreground">
+                              Valid: {new Date(lp.validFrom).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                              {" → "}
+                              {new Date(lp.validUntil).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                            </p>
+                          </div>
+                          <Badge className={`text-[10px] border-0 ${lp.status === "active" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"}`}>{lp.status}</Badge>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </>
@@ -895,42 +952,23 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
       </Dialog>
 
       {/* ── Cancel Confirmation Dialog ─────────────────────────────────────── */}
-      <Dialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Cancel Booking</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to cancel your booking at{" "}
-              <span className="font-semibold">{cancelTarget?.propertyName}</span> for{" "}
-              {cancelTarget && formatDateRange(cancelTarget.checkInDate, cancelTarget.checkOutDate)}?
-            </DialogDescription>
-          </DialogHeader>
-
-          {cancelTarget?.cancellationPolicy && (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm flex items-start gap-2">
-              <ShieldCheck className="h-4 w-4 text-yellow-600 mt-0.5 shrink-0" />
-              <div>
-                <p className="font-semibold text-yellow-800 mb-0.5">Cancellation Policy</p>
-                <p className="text-yellow-700">{cancelTarget.cancellationPolicy}</p>
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setCancelTarget(null)}>
-              Keep Booking
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={cancelMutation.isPending}
-              onClick={() => cancelTarget && cancelMutation.mutate(cancelTarget.id)}
-            >
-              {cancelMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Yes, Cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <CancelDialog
+        booking={cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={async (reason: string) => {
+          if (!cancelTarget) return;
+          try {
+            const res = await api.patch(`/bookings/${cancelTarget.id}/cancel`, { reason });
+            queryClient.invalidateQueries({ queryKey });
+            queryClient.invalidateQueries({ queryKey: ["bookings"] });
+            const r = res as any;
+            toast({ title: `Booking cancelled. Refund: AED ${r.totalRefund}` });
+            setCancelTarget(null);
+          } catch (err: any) {
+            toast({ title: err.message || "Failed to cancel", variant: "destructive" });
+          }
+        }}
+      />
 
       {/* ── Deposit Return Dialog ─────────────────────────────────────── */}
       <Dialog open={!!depositTarget} onOpenChange={(open) => { if (!open) { setDepositTarget(null); setDepositReturnAmount(""); setDepositDeductionReason(""); setDepositDeductionAmount(""); } }}>
@@ -1003,6 +1041,101 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// ── Cancel Dialog with refund preview ──
+function CancelDialog({ booking, onClose, onConfirm }: { booking: any; onClose: () => void; onConfirm: (reason: string) => Promise<void> }) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const { data: preview } = useQuery<any>({
+    queryKey: ["/bookings", booking?.id, "cancel-preview"],
+    queryFn: () => api.get(`/bookings/${booking.id}/cancel-preview`),
+    enabled: !!booking,
+  });
+
+  if (!booking) return null;
+
+  return (
+    <Dialog open={!!booking} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Cancel Booking</DialogTitle>
+          <DialogDescription>
+            Cancel booking at <span className="font-semibold">{booking.propertyName}</span> for{" "}
+            {formatDateRange(booking.checkInDate, booking.checkOutDate)}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Cancellation Policy */}
+          {booking.cancellationPolicy && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm flex items-start gap-2">
+              <ShieldCheck className="h-4 w-4 text-yellow-600 mt-0.5 shrink-0" />
+              <div>
+                <p className="font-semibold text-yellow-800 mb-0.5">Policy: {booking.cancellationPolicy}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Refund Preview */}
+          {preview && (
+            <div className="bg-muted/50 rounded-lg p-4 space-y-2 text-sm">
+              <p className="text-xs font-semibold text-muted-foreground uppercase">Refund Breakdown</p>
+              <div className="flex justify-between">
+                <span>Rental refund</span>
+                <span className="font-medium">AED {Number(preview.rentalRefund).toLocaleString()}</span>
+              </div>
+              {Number(preview.depositRefund) > 0 && (
+                <div className="flex justify-between">
+                  <span>Security deposit (full return)</span>
+                  <span className="font-medium">AED {Number(preview.depositRefund).toLocaleString()}</span>
+                </div>
+              )}
+              {Number(preview.nonRefundable) > 0 && (
+                <div className="flex justify-between text-red-600">
+                  <span>Non-refundable</span>
+                  <span className="font-medium">-AED {Number(preview.nonRefundable).toLocaleString()}</span>
+                </div>
+              )}
+              <Separator />
+              <div className="flex justify-between font-bold text-base">
+                <span>Total Refund</span>
+                <span className="text-green-700">AED {Number(preview.totalRefund).toLocaleString()}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Reason */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Reason for cancellation <span className="text-destructive">*</span></label>
+            <textarea
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Please explain why you're cancelling..."
+            />
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={onClose}>Keep Booking</Button>
+          <Button
+            variant="destructive"
+            disabled={submitting || !reason.trim()}
+            onClick={async () => {
+              setSubmitting(true);
+              await onConfirm(reason);
+              setSubmitting(false);
+            }}
+          >
+            {submitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Cancel & Refund AED {preview ? Number(preview.totalRefund).toLocaleString() : "..."}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

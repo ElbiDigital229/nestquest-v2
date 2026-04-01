@@ -238,7 +238,15 @@ router.post("/signup", async (req: Request, res: Response) => {
       }
     } catch {}
 
-    // Create session
+    // Destroy any existing session before creating new one
+    await new Promise<void>((resolve) => {
+      req.session.regenerate((err) => {
+        if (err) console.error("Session regenerate error:", err);
+        resolve();
+      });
+    });
+
+    // Create fresh session
     req.session.userId = user.id;
     req.session.userRole = data.role;
     req.session.userEmail = user.email;
@@ -305,7 +313,14 @@ router.post("/login", async (req: Request, res: Response) => {
       }
     }
 
-    // Create session
+    // Regenerate session to prevent session fixation
+    await new Promise<void>((resolve) => {
+      req.session.regenerate((err) => {
+        if (err) console.error("Session regenerate error:", err);
+        resolve();
+      });
+    });
+
     req.session.userId = user.id;
     req.session.userRole = user.role;
     req.session.userEmail = user.email;
@@ -432,7 +447,14 @@ router.post("/verify-login-otp", async (req: Request, res: Response) => {
       return res.status(403).json({ error: "Account is suspended" });
     }
 
-    // Create session
+    // Regenerate session to prevent session fixation
+    await new Promise<void>((resolve) => {
+      req.session.regenerate((err) => {
+        if (err) console.error("Session regenerate error:", err);
+        resolve();
+      });
+    });
+
     req.session.userId = user.id;
     req.session.userRole = user.role;
     req.session.userEmail = user.email;

@@ -2020,4 +2020,164 @@ router.delete("/:id/expenses/:expenseId", async (req: Request, res: Response) =>
   }
 });
 
+// ══════════════════════════════════════════════════════
+// SMART LOCKS
+// ══════════════════════════════════════════════════════
+
+// List locks for a property
+router.get("/:id/locks", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT l.id, l.name, l.brand, l.model, l.device_id AS "deviceId", l.location, l.is_active AS "isActive",
+        l.created_at AS "createdAt",
+        (SELECT COUNT(*)::int FROM st_lock_pins p WHERE p.lock_id = l.id AND p.status = 'active') AS "activePins"
+      FROM st_property_locks l WHERE l.property_id = ${id}
+      ORDER BY l.created_at DESC
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Add lock to property
+router.post("/:id/locks", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const err = await verifyOwnership(id, await resolvePmId(req));
+    if (err) return res.status(err.status).json({ error: err.error });
+
+    const { name, brand, model, deviceId, location, apiKey } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: "Lock name is required" });
+
+    const lockId = crypto.randomUUID();
+    await db.execute(sql`
+      INSERT INTO st_property_locks (id, property_id, name, brand, model, device_id, location, api_key)
+      VALUES (${lockId}, ${id}, ${name.trim()}, ${brand || null}, ${model || null}, ${deviceId || null}, ${location || null}, ${apiKey || null})
+    `);
+
+    await logPropertyActivity(id, req.session.userId!, "property_updated", `Smart lock added: ${name}`, { lockId });
+    return res.status(201).json({ id: lockId });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Update lock
+router.patch("/:id/locks/:lockId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id, lockId } = req.params;
+    const { name, brand, model, deviceId, location, apiKey, isActive } = req.body;
+    const sets: string[] = ["updated_at = NOW()"];
+    if (name !== undefined) sets.push(`name = '${name.replace(/'/g, "''")}'`);
+    if (brand !== undefined) sets.push(`brand = ${brand ? `'${brand}'` : 'NULL'}`);
+    if (model !== undefined) sets.push(`model = ${model ? `'${model}'` : 'NULL'}`);
+    if (deviceId !== undefined) sets.push(`device_id = ${deviceId ? `'${deviceId}'` : 'NULL'}`);
+    if (location !== undefined) sets.push(`location = ${location ? `'${location.replace(/'/g, "''")}'` : 'NULL'}`);
+    if (apiKey !== undefined) sets.push(`api_key = ${apiKey ? `'${apiKey}'` : 'NULL'}`);
+    if (isActive !== undefined) sets.push(`is_active = ${isActive}`);
+
+    await db.execute(sql.raw(`UPDATE st_property_locks SET ${sets.join(", ")} WHERE id = '${lockId}' AND property_id = '${id}'`));
+    return res.json({ message: "Lock updated" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete lock
+router.delete("/:id/locks/:lockId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
+  try {
+    const { id, lockId } = req.params;
+    await db.execute(sql`DELETE FROM st_property_locks WHERE id = ${lockId} AND property_id = ${id}`);
+    return res.json({ message: "Lock deleted" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Generate PIN for a booking
+router.post("/:id/locks/:lockId/generate-pin", requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
+  try {
+    const { id, lockId } = req.params;
+    const { bookingId } = req.body;
+    const userId = req.session.userId!;
+
+    if (!bookingId) return res.status(400).json({ error: "Booking ID required" });
+
+    // Get booking dates
+    const bookingResult = await db.execute(sql`
+      SELECT check_in_date, check_out_date, p.check_in_time, p.check_out_time
+      FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
+      WHERE b.id = ${bookingId} AND b.property_id = ${id}
+    `);
+    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+
+    const booking = bookingResult.rows[0] as any;
+    const checkInTime = booking.check_in_time || "15:00";
+    const checkOutTime = booking.check_out_time || "12:00";
+    const validFrom = new Date(`${booking.check_in_date}T${checkInTime}:00`);
+    const validUntil = new Date(`${booking.check_out_date}T${checkOutTime}:00`);
+
+    // Deactivate any existing active PIN for this booking+lock
+    await db.execute(sql`
+      UPDATE st_lock_pins SET status = 'deactivated', deactivated_at = NOW()
+      WHERE lock_id = ${lockId} AND booking_id = ${bookingId} AND status = 'active'
+    `);
+
+    // Generate new PIN
+    const pin = Math.floor(100000 + Math.random() * 900000).toString();
+    const pinId = crypto.randomUUID();
+
+    await db.execute(sql`
+      INSERT INTO st_lock_pins (id, lock_id, booking_id, pin, valid_from, valid_until, status, generated_by)
+      VALUES (${pinId}, ${lockId}, ${bookingId}, ${pin}, ${validFrom.toISOString()}, ${validUntil.toISOString()}, 'active', ${userId})
+    `);
+
+    // Also update booking access_pin
+    await db.execute(sql`UPDATE st_bookings SET access_pin = ${pin}, updated_at = NOW() WHERE id = ${bookingId}`);
+
+    await logPropertyActivity(id, userId, "pin_generated", `Access PIN generated for booking`, { bookingId, lockId, pin });
+
+    return res.status(201).json({ id: pinId, pin, validFrom, validUntil });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Deactivate PIN
+router.patch("/:id/locks/:lockId/pins/:pinId/deactivate", requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
+  try {
+    const { pinId } = req.params;
+    await db.execute(sql`UPDATE st_lock_pins SET status = 'deactivated', deactivated_at = NOW() WHERE id = ${pinId}`);
+    return res.json({ message: "PIN deactivated" });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Get PIN history for a property
+router.get("/:id/lock-pins", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await db.execute(sql`
+      SELECT p.id, p.pin, p.status, p.valid_from AS "validFrom", p.valid_until AS "validUntil",
+        p.created_at AS "createdAt", p.deactivated_at AS "deactivatedAt",
+        l.name AS "lockName", l.location AS "lockLocation",
+        COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName",
+        b.check_in_date AS "checkIn", b.check_out_date AS "checkOut"
+      FROM st_lock_pins p
+      JOIN st_property_locks l ON l.id = p.lock_id
+      LEFT JOIN st_bookings b ON b.id = p.booking_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE l.property_id = ${id}
+      ORDER BY p.created_at DESC
+      LIMIT 50
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

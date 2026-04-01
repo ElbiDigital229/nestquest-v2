@@ -586,6 +586,20 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       checkoutRecord: checkout.rows[0] || null,
     };
 
+    // Add lock PIN info for PM/PO/Guest
+    if (isGuest || isPm || isPo || userRole === "PM_TEAM_MEMBER" || userRole === "SUPER_ADMIN") {
+      const pinResult = await db.execute(sql`
+        SELECT p.id, p.pin, p.status, p.valid_from AS "validFrom", p.valid_until AS "validUntil",
+          p.created_at AS "createdAt", p.deactivated_at AS "deactivatedAt",
+          l.name AS "lockName", l.brand AS "lockBrand", l.location AS "lockLocation"
+        FROM st_lock_pins p
+        JOIN st_property_locks l ON l.id = p.lock_id
+        WHERE p.booking_id = ${id}
+        ORDER BY p.created_at DESC
+      `);
+      response.lockPins = pinResult.rows;
+    }
+
     // PM-only fields
     if (isPm || userRole === "SUPER_ADMIN") {
       response.pmNotes = booking.pm_notes;
@@ -614,8 +628,55 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/bookings/:id/cancel-preview ──────────────
+// Preview refund calculation before cancelling
+router.get("/:id/cancel-preview", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+    const { id } = req.params;
+
+    const bookingResult = await db.execute(sql`
+      SELECT b.*, p.public_name AS property_name, p.po_user_id
+      FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
+      WHERE b.id = ${id}
+    `);
+    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+
+    const booking = bookingResult.rows[0] as any;
+    const isPm = booking.pm_user_id === userId || userRole === "PM_TEAM_MEMBER";
+    const totalAmount = parseFloat(booking.total_amount || "0");
+    const securityDeposit = parseFloat(booking.security_deposit_amount || "0");
+    const rentalAmount = totalAmount - securityDeposit;
+
+    // Rental refund based on policy
+    const rentalRefund = isPm
+      ? rentalAmount
+      : parseFloat(calculateRefund(booking.cancellation_policy, rentalAmount.toFixed(2), booking.check_in_date, booking.status));
+
+    // Security deposit: always fully returned on cancellation (guest never stayed)
+    const depositRefund = securityDeposit;
+
+    const totalRefund = rentalRefund + depositRefund;
+    const nonRefundable = rentalAmount - rentalRefund;
+
+    return res.json({
+      rentalAmount: rentalAmount.toFixed(2),
+      securityDeposit: securityDeposit.toFixed(2),
+      rentalRefund: rentalRefund.toFixed(2),
+      depositRefund: depositRefund.toFixed(2),
+      totalRefund: totalRefund.toFixed(2),
+      nonRefundable: nonRefundable.toFixed(2),
+      cancellationPolicy: booking.cancellation_policy,
+      status: booking.status,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // ── PATCH /api/bookings/:id/cancel ────────────────────
-// Cancel a booking (guest or PM)
+// Cancel a booking (guest or PM) with full financial flow
 router.patch("/:id/cancel", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
@@ -623,80 +684,116 @@ router.patch("/:id/cancel", requireAuth, async (req: Request, res: Response) => 
     const { id } = req.params;
     const { reason } = req.body;
 
+    if (!reason?.trim()) {
+      return res.status(400).json({ error: "Cancellation reason is required" });
+    }
+
     const bookingResult = await db.execute(sql`
-      SELECT b.*, p.public_name AS property_name
-      FROM st_bookings b
-      JOIN st_properties p ON p.id = b.property_id
+      SELECT b.*, p.public_name AS property_name, p.po_user_id
+      FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
       WHERE b.id = ${id}
     `);
 
-    if (bookingResult.rows.length === 0) {
-      return res.status(404).json({ error: "Booking not found" });
-    }
+    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
 
     const booking = bookingResult.rows[0] as any;
     const isGuest = booking.guest_user_id === userId;
-    const isPm = booking.pm_user_id === userId;
+    const isPmOrTeam = booking.pm_user_id === userId || userRole === "PM_TEAM_MEMBER";
 
-    if (!isGuest && !isPm) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
+    if (!isGuest && !isPmOrTeam) return res.status(403).json({ error: "Access denied" });
     if (!["requested", "confirmed"].includes(booking.status)) {
       return res.status(400).json({ error: `Cannot cancel a booking with status: ${booking.status}` });
     }
 
-    // Calculate refund
-    const refundAmount = isPm
-      ? booking.total_amount // PM cancels = full refund
-      : calculateRefund(booking.cancellation_policy, booking.total_amount, booking.check_in_date, booking.status);
+    const totalAmount = parseFloat(booking.total_amount || "0");
+    const securityDeposit = parseFloat(booking.security_deposit_amount || "0");
+    const rentalAmount = totalAmount - securityDeposit;
 
+    // Calculate refund
+    const rentalRefund = isPmOrTeam
+      ? rentalAmount
+      : parseFloat(calculateRefund(booking.cancellation_policy, rentalAmount.toFixed(2), booking.check_in_date, booking.status));
+    const depositRefund = securityDeposit; // Always full return on cancel
+    const totalRefund = rentalRefund + depositRefund;
+
+    // 1. Update booking status
     await db.execute(sql`
       UPDATE st_bookings SET
         status = 'cancelled',
         cancelled_at = NOW(),
         cancelled_by = ${userId},
-        cancellation_reason = ${reason || null},
-        refund_amount = ${refundAmount},
-        payment_status = ${parseFloat(refundAmount) > 0 ? sql.raw("'refunded'::st_booking_payment_status") : sql.raw("'paid'::st_booking_payment_status")},
+        cancellation_reason = ${sanitize(reason)},
+        refund_amount = ${totalRefund.toFixed(2)},
+        payment_status = ${totalRefund > 0 ? sql.raw("'refunded'::st_booking_payment_status") : sql.raw("'paid'::st_booking_payment_status")},
         updated_at = NOW()
       WHERE id = ${id}
     `);
 
-    // Record refund if applicable
-    if (parseFloat(refundAmount) > 0 && booking.status === "confirmed") {
+    // 2. Void/delete pending settlements for this booking
+    await db.execute(sql`
+      DELETE FROM pm_po_settlements WHERE booking_id = ${id} AND status = 'pending'
+    `);
+
+    // 3. Auto-return security deposit if exists
+    if (securityDeposit > 0) {
+      const depositResult = await db.execute(sql`
+        SELECT id FROM st_security_deposits WHERE booking_id = ${id} AND status NOT IN ('returned', 'forfeited')
+      `);
+      if (depositResult.rows.length > 0) {
+        await db.execute(sql`
+          UPDATE st_security_deposits SET
+            status = 'returned', returned_amount = ${securityDeposit.toFixed(2)},
+            returned_at = NOW(), notes = 'Auto-returned on cancellation', updated_at = NOW()
+          WHERE booking_id = ${id}
+        `);
+      }
+    }
+
+    // 4. Create refund settlement if money was collected (confirmed bookings)
+    if (totalRefund > 0 && booking.status === "confirmed") {
       await recordBookingRefund({
         id: booking.id,
         propertyId: booking.property_id,
-        refundAmount,
+        refundAmount: totalRefund.toFixed(2),
         bankAccountBelongsTo: booking.bank_account_belongs_to,
       });
+
+      // Create guest refund settlement — PM owes guest
+      await db.execute(sql`
+        INSERT INTO pm_po_settlements (id, booking_id, property_id, from_user_id, to_user_id, amount, reason, collected_by, status, notes, created_at, updated_at)
+        VALUES (gen_random_uuid()::text, ${id}, ${booking.property_id},
+          ${booking.pm_user_id}, ${booking.guest_user_id || booking.pm_user_id},
+          ${totalRefund.toFixed(2)}, 'guest_refund', 'property_manager', 'pending',
+          ${'Cancellation refund: ' + sanitize(reason)},
+          NOW(), NOW())
+      `);
     }
 
-    // Notify other party
+    // 5. Notify other party
     const notifyUserId = isGuest ? booking.pm_user_id : booking.guest_user_id;
     if (notifyUserId) {
       await createNotification({
         userId: notifyUserId,
         type: "BOOKING_CANCELLED",
         title: "Booking cancelled",
-        body: `A booking for ${booking.property_name || "a property"} has been cancelled.${parseFloat(refundAmount) > 0 ? ` Refund: AED ${refundAmount}` : ""}`,
-        linkUrl: isGuest
-          ? `/portal/st-properties/${booking.property_id}?tab=bookings`
-          : `/portal/my-bookings/${id}`,
+        body: `Booking at ${booking.property_name || "a property"} has been cancelled.${totalRefund > 0 ? ` Refund: AED ${totalRefund.toFixed(2)}` : ""} Reason: ${reason}`,
+        linkUrl: isGuest ? `/portal/my-bookings` : `/portal/my-bookings`,
         relatedId: id,
       });
     }
 
     await logPropertyActivity(
-      booking.property_id,
-      userId,
-      "booking_cancelled",
-      `Booking cancelled by ${isGuest ? "guest" : "PM"}${reason ? `: ${reason}` : ""}`,
-      { bookingId: id, refundAmount }
+      booking.property_id, userId, "booking_cancelled",
+      `Booking cancelled by ${isGuest ? "guest" : "PM"}: ${reason}. Refund: AED ${totalRefund.toFixed(2)}`,
+      { bookingId: id, rentalRefund, depositRefund, totalRefund, reason }
     );
 
-    return res.json({ status: "cancelled", refundAmount });
+    return res.json({
+      status: "cancelled",
+      rentalRefund: rentalRefund.toFixed(2),
+      depositRefund: depositRefund.toFixed(2),
+      totalRefund: totalRefund.toFixed(2),
+    });
   } catch (error: any) {
     console.error("[Bookings] PATCH cancel error:", error);
     return res.status(500).json({ error: "Failed to cancel booking" });
@@ -1142,10 +1239,33 @@ router.patch("/:id/check-in", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"),
       return res.status(400).json({ error: `Cannot check in a booking with status: ${booking.status}` });
     }
 
-    // Generate access pin if smart home
+    // Generate access pin if smart home — use lock system if available
     let accessPin: string | null = null;
     if (booking.smart_home) {
       accessPin = Math.floor(100000 + Math.random() * 900000).toString();
+
+      // If property has locks, create a pin record
+      const lockResult = await db.execute(sql`
+        SELECT id FROM st_property_locks WHERE property_id = ${booking.property_id} AND is_active = true LIMIT 1
+      `);
+      if (lockResult.rows.length > 0) {
+        const lockId = (lockResult.rows[0] as any).id;
+        const checkInTime = booking.check_in_time || "15:00";
+        const checkOutTime = booking.check_out_time || "12:00";
+        const validFrom = new Date(`${booking.check_in_date}T${checkInTime}:00`);
+        const validUntil = new Date(`${booking.check_out_date}T${checkOutTime}:00`);
+
+        // Deactivate old pins
+        await db.execute(sql`
+          UPDATE st_lock_pins SET status = 'deactivated', deactivated_at = NOW()
+          WHERE booking_id = ${id} AND status = 'active'
+        `);
+
+        await db.execute(sql`
+          INSERT INTO st_lock_pins (id, lock_id, booking_id, pin, valid_from, valid_until, status, generated_by)
+          VALUES (gen_random_uuid()::text, ${lockId}, ${id}, ${accessPin}, ${validFrom.toISOString()}, ${validUntil.toISOString()}, 'active', ${userId})
+        `);
+      }
     }
 
     await db.execute(sql`

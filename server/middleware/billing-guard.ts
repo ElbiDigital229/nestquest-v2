@@ -13,8 +13,10 @@ const WHITELIST_PREFIXES = [
   "/api/auth/",
   "/api/subscriptions/",
   "/api/notifications",
-  "/api/plans",          // view plans
-  "/api/portal/profile",  // load profile data for settings page
+  "/api/plans",               // view plans
+  "/api/portal/profile",      // load profile data for settings page
+  "/api/portal/change-password", // always allow password changes
+  "/api/portal/update-profile",  // always allow profile updates
 ];
 
 export async function requireBillingCurrent(req: Request, res: Response, next: NextFunction) {

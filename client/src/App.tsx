@@ -12,6 +12,7 @@ import PortalTeam from "@/pages/portal/team";
 import CalendarOverview from "@/pages/portal/calendar-overview";
 import StReviews from "@/pages/portal/st-reviews";
 import MyReviews from "@/pages/portal/my-reviews";
+import PoReports from "@/pages/portal/po-reports";
 import CleanerOps from "@/pages/portal/cleaner-ops";
 import ReviewPage from "@/pages/portal/review";
 import CleanerTasks from "@/pages/portal/cleaner-tasks";
@@ -205,6 +206,13 @@ export default function App() {
             </PortalLayout>
           </ProtectedRoute>
         )}
+      </Route>
+      <Route path="/portal/po-reports">
+        <ProtectedRoute roles={["PROPERTY_OWNER"]}>
+          <PortalLayout>
+            <PoReports />
+          </PortalLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/portal/my-reviews">
         <ProtectedRoute roles={["PROPERTY_OWNER", "PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
