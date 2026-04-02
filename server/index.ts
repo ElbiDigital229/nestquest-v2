@@ -20,6 +20,7 @@ import bookingRoutes from "./routes/bookings";
 import pmSettingsRoutes from "./routes/pm-settings";
 import teamRoutes from "./routes/team";
 import cleanerRoutes from "./routes/cleaners";
+import crypto from "crypto";
 import { checkAllDocumentExpiry } from "./utils/document-expiry-cron";
 import { runBillingCron } from "./utils/billing-cron";
 import { expireStaleBookings } from "./utils/booking-expiry-cron";
@@ -47,7 +48,14 @@ app.use(
       tableName: "session",
       createTableIfMissing: true,
     }),
-    secret: process.env.SESSION_SECRET || "nestquest-dev-secret-change-in-prod",
+    secret: (() => {
+      if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("SESSION_SECRET environment variable is required in production");
+      }
+      console.warn("WARNING: No SESSION_SECRET set — using random secret (sessions will not persist across restarts)");
+      return crypto.randomBytes(32).toString("hex");
+    })(),
     resave: false,
     saveUninitialized: false,
     cookie: {

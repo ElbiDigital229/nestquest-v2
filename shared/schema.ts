@@ -1,4 +1,4 @@
-import { pgTable, text, varchar, timestamp, date, pgEnum, boolean, uniqueIndex, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, date, pgEnum, boolean, uniqueIndex, index, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
@@ -122,7 +122,9 @@ export const userAuditLog = pgTable("user_audit_log", {
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("user_audit_log_user_id_idx").on(table.userId),
+]);
 
 // ── PM-PO/Tenant Links ────────────────────────────────
 
@@ -170,7 +172,9 @@ export const notifications = pgTable("notifications", {
   relatedId: varchar("related_id", { length: 36 }),
   isRead: boolean("is_read").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("notifications_user_id_idx").on(table.userId),
+]);
 
 // ── Messages ───────────────────────────────────────────
 
@@ -241,7 +245,9 @@ export const subscriptions = pgTable("subscriptions", {
   currentPeriodEnd: timestamp("current_period_end").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("subscriptions_user_id_idx").on(table.userId),
+]);
 
 export const invoices = pgTable("invoices", {
   id: varchar("id", { length: 36 })
@@ -263,7 +269,10 @@ export const invoices = pgTable("invoices", {
   dueDate: timestamp("due_date"),
   paidAt: timestamp("paid_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("invoices_user_id_idx").on(table.userId),
+  index("invoices_subscription_id_idx").on(table.subscriptionId),
+]);
 
 // ── Payment Methods ───────────────────────────────────
 
@@ -485,7 +494,9 @@ export const stPropertyPhotos = pgTable("st_property_photos", {
   displayOrder: integer("display_order").default(0),
   isCover: boolean("is_cover").default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("st_property_photos_property_id_idx").on(table.propertyId),
+]);
 
 // ── ST Property Amenities ─────────────────────────────
 
@@ -726,7 +737,10 @@ export const stBookings = pgTable("st_bookings", {
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
+}, (table) => [
+  index("st_bookings_property_id_idx").on(table.propertyId),
+  index("st_bookings_guest_user_id_idx").on(table.guestUserId),
+]);
 
 // ── ST Booking Transactions ─────────────────────────
 

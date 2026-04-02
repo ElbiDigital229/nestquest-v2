@@ -39,6 +39,10 @@ const upload = multer({
 });
 
 router.post("/", (req: Request, res: Response) => {
+  if (!req.session?.userId) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
   upload.single("file")(req, res, (err: any) => {
     if (err) {
       // Multer or file filter error — return JSON instead of HTML stack trace

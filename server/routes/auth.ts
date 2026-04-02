@@ -5,8 +5,33 @@ import { users, guests, otpVerifications, userAuditLog, signupSchema, loginSchem
 import { eq, and, gt, lte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
+import rateLimit from "express-rate-limit";
 
 const router = Router();
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: { error: "Too many login attempts. Please try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const signupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3,
+  message: { error: "Too many signup attempts. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: { error: "Too many OTP requests. Please try again in 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 const SALT_ROUNDS = 10;
 
 // ── Document Expiry Check (fire-and-forget on login) ───
@@ -72,7 +97,7 @@ async function checkDocumentExpiry(userId: string): Promise<void> {
 
 // ── Send Signup OTP ────────────────────────────────────
 
-router.post("/send-signup-otp", async (req: Request, res: Response) => {
+router.post("/send-signup-otp", otpLimiter, async (req: Request, res: Response) => {
   try {
     const { phone } = req.body;
     if (!phone) {
@@ -101,7 +126,7 @@ router.post("/send-signup-otp", async (req: Request, res: Response) => {
 
 // ── Verify Signup OTP ──────────────────────────────────
 
-router.post("/verify-signup-otp", async (req: Request, res: Response) => {
+router.post("/verify-signup-otp", otpLimiter, async (req: Request, res: Response) => {
   try {
     const { phone, otp } = req.body;
     if (!phone || !otp) {
@@ -140,7 +165,7 @@ router.post("/verify-signup-otp", async (req: Request, res: Response) => {
 
 // ── Guest Signup ───────────────────────────────────────
 
-router.post("/signup", async (req: Request, res: Response) => {
+router.post("/signup", signupLimiter, async (req: Request, res: Response) => {
   try {
     // Validate request body
     const parsed = signupSchema.safeParse(req.body);
@@ -267,7 +292,7 @@ router.post("/signup", async (req: Request, res: Response) => {
 
 // ── Login ──────────────────────────────────────────────
 
-router.post("/login", async (req: Request, res: Response) => {
+router.post("/login", loginLimiter, async (req: Request, res: Response) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -367,7 +392,7 @@ router.post("/login", async (req: Request, res: Response) => {
 
 // ── Phone Login — Send OTP ─────────────────────────────
 
-router.post("/send-login-otp", async (req: Request, res: Response) => {
+router.post("/send-login-otp", otpLimiter, async (req: Request, res: Response) => {
   try {
     const { phone, role } = req.body;
     if (!phone || !role) {
@@ -406,7 +431,7 @@ router.post("/send-login-otp", async (req: Request, res: Response) => {
 
 // ── Phone Login — Verify OTP & Login ──────────────────
 
-router.post("/verify-login-otp", async (req: Request, res: Response) => {
+router.post("/verify-login-otp", otpLimiter, async (req: Request, res: Response) => {
   try {
     const { phone, otp, role } = req.body;
     if (!phone || !otp || !role) {
