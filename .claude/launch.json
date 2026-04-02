@@ -2,18 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "nestquest-api",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "name": "NQ2 API",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "server/index.ts"],
       "port": 3000,
       "env": {
-        "DATABASE_URL": "postgresql://localhost:5432/nestquest_v2"
+        "DATABASE_URL": "postgresql://hashimimac@localhost:5432/nestquest_v2"
       }
     },
     {
-      "name": "nestquest-frontend",
+      "name": "NQ2 Frontend",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5173"],
+      "runtimeArgs": ["vite", "--config", "vite.config.ts"],
       "port": 5173
     }
   ]

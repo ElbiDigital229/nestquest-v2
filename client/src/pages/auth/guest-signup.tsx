@@ -44,6 +44,8 @@ import {
   X,
   ImageIcon,
   Building2,
+  CreditCard,
+  Lock,
 } from "lucide-react";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -1244,6 +1246,15 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
   // ─── Plan Selection Step (PM only) ──────────────────────────────────────
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [planActivated, setPlanActivated] = useState(false);
+  const [showCardForm, setShowCardForm] = useState(false);
+  const [cardForm, setCardForm] = useState({
+    cardNumber: "",
+    cardExpiry: "",
+    cardCvc: "",
+    cardName: "",
+  });
+  const [cardErrors, setCardErrors] = useState<Record<string, string>>({});
 
   const { data: availablePlans = [] } = useQuery<any[]>({
     queryKey: ["/subscriptions/plans"],
@@ -1251,12 +1262,56 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
     enabled: isPM && step === (stepMap as any).choosePlan,
   });
 
-  const handlePlanSelect = async (planId: string) => {
-    setSelectedPlanId(planId);
+  const formatCardNumber = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 16);
+    return digits.replace(/(.{4})/g, "$1 ").trim();
+  };
+
+  const formatExpiry = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 4);
+    if (digits.length >= 3) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    return digits;
+  };
+
+  const detectCardBrand = (number: string): string => {
+    const d = number.replace(/\s/g, "");
+    if (/^4/.test(d)) return "Visa";
+    if (/^5[1-5]/.test(d) || /^2[2-7]/.test(d)) return "Mastercard";
+    if (/^3[47]/.test(d)) return "Amex";
+    return "Card";
+  };
+
+  const validateCard = (): boolean => {
+    const errs: Record<string, string> = {};
+    const digits = cardForm.cardNumber.replace(/\s/g, "");
+    if (digits.length < 13 || digits.length > 16) errs.cardNumber = "Enter a valid card number";
+    if (!/^\d{2}\/\d{2}$/.test(cardForm.cardExpiry)) {
+      errs.cardExpiry = "Enter MM/YY";
+    } else {
+      const [mm, yy] = cardForm.cardExpiry.split("/").map(Number);
+      const now = new Date();
+      const expiry = new Date(2000 + yy, mm);
+      if (mm < 1 || mm > 12 || expiry <= now) errs.cardExpiry = "Card is expired";
+    }
+    if (cardForm.cardCvc.length < 3) errs.cardCvc = "Enter CVC";
+    if (cardForm.cardName.trim().length < 2) errs.cardName = "Enter cardholder name";
+    setCardErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
+  const handleCheckout = async () => {
+    if (!validateCard() || !selectedPlanId) return;
     setCheckoutLoading(true);
     try {
-      await api.post("/subscriptions/checkout", { planId, cardLast4: "0000", cardBrand: "Pending", cardName: form.fullName });
+      const digits = cardForm.cardNumber.replace(/\s/g, "");
+      await api.post("/subscriptions/checkout", {
+        planId: selectedPlanId,
+        cardLast4: digits.slice(-4),
+        cardBrand: detectCardBrand(digits),
+        cardName: cardForm.cardName.trim(),
+      });
       toast({ title: "Plan activated!" });
+      setPlanActivated(true);
       setStep(stepMap.complete);
     } catch (error: any) {
       toast({ title: error.message || "Failed to activate plan", variant: "destructive" });
@@ -1265,68 +1320,197 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
     }
   };
 
+  const selectedPlan = availablePlans.find((p: any) => p.id === selectedPlanId);
+
   const renderPlanStep = () => (
     <>
       <CardHeader className="text-center">
-        <CardTitle className="text-2xl">Choose Your Plan</CardTitle>
+        <CardTitle className="text-2xl">
+          {showCardForm ? "Payment Details" : "Choose Your Plan"}
+        </CardTitle>
         <CardDescription>
-          Select a subscription plan to get started
+          {showCardForm
+            ? "Enter your card details to activate your plan"
+            : "Select a subscription plan to get started"}
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-4">
-          {availablePlans.map((plan: any) => (
-            <div
-              key={plan.id}
-              className={cn(
-                "border rounded-lg p-4 cursor-pointer transition-all hover:border-primary",
-                selectedPlanId === plan.id && "border-primary bg-primary/5"
-              )}
-              onClick={() => !checkoutLoading && setSelectedPlanId(plan.id)}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold text-lg">{plan.name}</h3>
-                  {plan.description && (
-                    <p className="text-sm text-muted-foreground">{plan.description}</p>
+        {!showCardForm ? (
+          <>
+            <div className="grid gap-4">
+              {availablePlans.map((plan: any) => (
+                <div
+                  key={plan.id}
+                  className={cn(
+                    "border rounded-lg p-4 cursor-pointer transition-all hover:border-primary",
+                    selectedPlanId === plan.id && "border-primary bg-primary/5"
+                  )}
+                  onClick={() => setSelectedPlanId(plan.id)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-semibold text-lg">{plan.name}</h3>
+                      {plan.description && (
+                        <p className="text-sm text-muted-foreground">{plan.description}</p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-bold">AED {plan.price}</p>
+                      <p className="text-xs text-muted-foreground">/{plan.billingCycle === "monthly" ? "mo" : plan.billingCycle}</p>
+                    </div>
+                  </div>
+                  {plan.features && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {plan.features.map((f: any) => (
+                        <span key={f.featureKey} className="text-xs bg-muted px-2 py-1 rounded">
+                          {f.limitType === "boolean"
+                            ? f.featureKey.replace(/_/g, " ")
+                            : `${f.numericMax} ${f.featureKey.replace(/_/g, " ")}`}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </div>
-                <div className="text-right">
-                  <p className="text-2xl font-bold">AED {plan.price}</p>
-                  <p className="text-xs text-muted-foreground">/{plan.billingCycle === "monthly" ? "mo" : plan.billingCycle}</p>
+              ))}
+            </div>
+            <Button
+              className="w-full mt-6"
+              disabled={!selectedPlanId}
+              onClick={() => setShowCardForm(true)}
+            >
+              Continue with Selected Plan
+            </Button>
+            <Button
+              variant="ghost"
+              className="w-full mt-2 text-muted-foreground"
+              onClick={() => setStep(stepMap.complete)}
+            >
+              Skip for now
+            </Button>
+          </>
+        ) : (
+          <>
+            {/* Plan summary */}
+            {selectedPlan && (
+              <div className="border rounded-lg p-3 mb-6 bg-muted/30 flex items-center justify-between">
+                <div>
+                  <p className="font-medium">{selectedPlan.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedPlan.billingCycle === "monthly" ? "Monthly" : selectedPlan.billingCycle} billing
+                  </p>
+                </div>
+                <p className="text-lg font-bold">AED {selectedPlan.price}<span className="text-xs font-normal text-muted-foreground">/{selectedPlan.billingCycle === "monthly" ? "mo" : selectedPlan.billingCycle}</span></p>
+              </div>
+            )}
+
+            {/* Card form */}
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="cardName">Cardholder Name</Label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="cardName"
+                    placeholder="Name on card"
+                    className="pl-10"
+                    value={cardForm.cardName}
+                    onChange={(e) => {
+                      setCardForm(p => ({ ...p, cardName: e.target.value }));
+                      setCardErrors(p => { const n = { ...p }; delete n.cardName; return n; });
+                    }}
+                  />
+                </div>
+                {cardErrors.cardName && <p className="text-sm text-destructive">{cardErrors.cardName}</p>}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cardNumber">Card Number</Label>
+                <div className="relative">
+                  <CreditCard className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="cardNumber"
+                    placeholder="1234 5678 9012 3456"
+                    className="pl-10"
+                    inputMode="numeric"
+                    value={cardForm.cardNumber}
+                    onChange={(e) => {
+                      setCardForm(p => ({ ...p, cardNumber: formatCardNumber(e.target.value) }));
+                      setCardErrors(p => { const n = { ...p }; delete n.cardNumber; return n; });
+                    }}
+                  />
+                  {cardForm.cardNumber.replace(/\s/g, "").length >= 4 && (
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground">
+                      {detectCardBrand(cardForm.cardNumber)}
+                    </span>
+                  )}
+                </div>
+                {cardErrors.cardNumber && <p className="text-sm text-destructive">{cardErrors.cardNumber}</p>}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="cardExpiry">Expiry Date</Label>
+                  <Input
+                    id="cardExpiry"
+                    placeholder="MM/YY"
+                    inputMode="numeric"
+                    value={cardForm.cardExpiry}
+                    onChange={(e) => {
+                      setCardForm(p => ({ ...p, cardExpiry: formatExpiry(e.target.value) }));
+                      setCardErrors(p => { const n = { ...p }; delete n.cardExpiry; return n; });
+                    }}
+                  />
+                  {cardErrors.cardExpiry && <p className="text-sm text-destructive">{cardErrors.cardExpiry}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="cardCvc">CVC</Label>
+                  <div className="relative">
+                    <Input
+                      id="cardCvc"
+                      placeholder="123"
+                      inputMode="numeric"
+                      maxLength={4}
+                      value={cardForm.cardCvc}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/\D/g, "").slice(0, 4);
+                        setCardForm(p => ({ ...p, cardCvc: v }));
+                        setCardErrors(p => { const n = { ...p }; delete n.cardCvc; return n; });
+                      }}
+                    />
+                    <Lock className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  </div>
+                  {cardErrors.cardCvc && <p className="text-sm text-destructive">{cardErrors.cardCvc}</p>}
                 </div>
               </div>
-              {plan.features && (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {plan.features.map((f: any) => (
-                    <span key={f.featureKey} className="text-xs bg-muted px-2 py-1 rounded">
-                      {f.limitType === "boolean"
-                        ? f.featureKey.replace(/_/g, " ")
-                        : `${f.numericMax} ${f.featureKey.replace(/_/g, " ")}`}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
-          ))}
-        </div>
-        <Button
-          className="w-full mt-6"
-          disabled={!selectedPlanId || checkoutLoading}
-          onClick={() => selectedPlanId && handlePlanSelect(selectedPlanId)}
-        >
-          {checkoutLoading ? (
-            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-          ) : null}
-          {checkoutLoading ? "Activating..." : "Continue with Selected Plan"}
-        </Button>
-        <Button
-          variant="ghost"
-          className="w-full mt-2 text-muted-foreground"
-          onClick={() => setStep(stepMap.complete)}
-        >
-          Skip for now
-        </Button>
+
+            <Button
+              className="w-full mt-6"
+              disabled={checkoutLoading}
+              onClick={handleCheckout}
+            >
+              {checkoutLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Lock className="h-4 w-4 mr-2" />
+              )}
+              {checkoutLoading ? "Processing..." : `Pay AED ${selectedPlan?.price || ""}`}
+            </Button>
+            <Button
+              variant="ghost"
+              className="w-full mt-2 text-muted-foreground"
+              disabled={checkoutLoading}
+              onClick={() => setShowCardForm(false)}
+            >
+              Back to plans
+            </Button>
+
+            <p className="text-xs text-center text-muted-foreground mt-4">
+              <Lock className="inline h-3 w-3 mr-1" />
+              Your payment information is secured
+            </p>
+          </>
+        )}
       </CardContent>
     </>
   );
@@ -1347,8 +1531,8 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
         <p className="text-sm text-muted-foreground mb-6">
           Your documents are pending verification. You will be notified once your KYC is approved.
         </p>
-        <Button onClick={() => navigate(isPM ? "/portal/plans" : `/login/${roleSlug}`)} className="w-full max-w-xs">
-          {isPM ? "Choose a Plan" : "Go to Sign In"}
+        <Button onClick={() => navigate(isPM ? (planActivated ? "/portal/dashboard" : "/portal/plans") : `/login/${roleSlug}`)} className="w-full max-w-xs">
+          {isPM ? (planActivated ? "Go to Dashboard" : "Choose a Plan") : "Go to Sign In"}
         </Button>
       </CardContent>
     </>
@@ -1403,8 +1587,8 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
             </CardFooter>
           )}
 
-          {/* Login link */}
-          {step < stepMap.complete && (
+          {/* Login link — hide after account is created (verify step onwards for PM) */}
+          {step < stepMap.verify && (
             <div className="px-6 pb-6 text-center">
               <p className="text-sm text-muted-foreground">
                 Already have an account?{" "}

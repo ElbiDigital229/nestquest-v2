@@ -1541,7 +1541,7 @@ function ViewInventory({ property }: { property: StPropertyData }) {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Purchase Date</Label>
-                <Input type="date" value={form.purchaseDate} onChange={e => setForm(f => ({ ...f, purchaseDate: e.target.value }))} />
+                <Input type="date" value={form.purchaseDate} max={new Date().toISOString().split("T")[0]} onChange={e => setForm(f => ({ ...f, purchaseDate: e.target.value }))} />
               </div>
               <div className="space-y-1.5">
                 <Label>Location</Label>
@@ -1559,11 +1559,17 @@ function ViewInventory({ property }: { property: StPropertyData }) {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAddOpen(false); setEditItem(null); }}>Cancel</Button>
-            <Button disabled={addMut.isPending || !form.name.trim()} onClick={() => addMut.mutate({
-              name: form.name, category: form.category, quantity: parseInt(form.quantity) || 1,
-              unitCost: form.unitCost || "0", condition: form.condition,
-              purchaseDate: form.purchaseDate || null, location: form.location || null, notes: form.notes || null,
-            })}>
+            <Button disabled={addMut.isPending || !form.name.trim()} onClick={() => {
+              if (form.purchaseDate && form.purchaseDate > new Date().toISOString().split("T")[0]) {
+                toast({ title: "Validation Error", description: "Purchase date cannot be in the future", variant: "destructive" });
+                return;
+              }
+              addMut.mutate({
+                name: form.name, category: form.category, quantity: parseInt(form.quantity) || 1,
+                unitCost: form.unitCost || "0", condition: form.condition,
+                purchaseDate: form.purchaseDate || null, location: form.location || null, notes: form.notes || null,
+              });
+            }}>
               {addMut.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {editItem ? "Save" : "Add Item"}
             </Button>

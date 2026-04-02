@@ -9,6 +9,7 @@ import {
   Loader2,
   Save,
   ArrowLeft,
+  ArrowRight,
   Check,
   Circle,
   Home,
@@ -424,6 +425,31 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
               onRefresh={handleRefresh}
             />
           )}
+
+          {/* Step navigation buttons */}
+          <div className="max-w-2xl mx-auto px-6 pb-6 pt-4 flex items-center justify-between">
+            {currentStep > 1 ? (
+              <Button
+                variant="outline"
+                onClick={() => setCurrentStep(currentStep - 1)}
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Previous
+              </Button>
+            ) : (
+              <div />
+            )}
+            {currentStep < STEPS.length ? (
+              <Button
+                onClick={() => setCurrentStep(currentStep + 1)}
+              >
+                Next
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Button>
+            ) : (
+              <div />
+            )}
+          </div>
         </div>
       </div>
     </div>

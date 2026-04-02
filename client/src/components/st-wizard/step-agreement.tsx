@@ -83,9 +83,9 @@ const ACQUISITION_TYPES = [
 // ── Document types for Cash ──────────────────────────────────
 
 const CASH_DOCUMENT_TYPES = [
-  { key: "title_deed", label: "Title Deed", required: true, hasExpiry: false },
-  { key: "spa", label: "SPA (Sale & Purchase Agreement)", required: true, hasExpiry: false },
-  { key: "noc", label: "NOC (No Objection Certificate)", required: true, hasExpiry: false },
+  { key: "title_deed", label: "Title Deed", required: true, hasExpiry: true },
+  { key: "spa", label: "SPA (Sale & Purchase Agreement)", required: true, hasExpiry: true },
+  { key: "noc", label: "NOC (No Objection Certificate)", required: true, hasExpiry: true },
   { key: "dtcm", label: "DTCM Letter", required: true, hasExpiry: true },
 ];
 
@@ -346,7 +346,7 @@ export default function StepAgreement({
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={isUploading}
+                      disabled={isUploading || (docType.hasExpiry && !docExpiryDates[docType.key])}
                       onClick={() => fileInputRefs.current[docType.key]?.click()}
                     >
                       {isUploading ? (
@@ -374,7 +374,7 @@ export default function StepAgreement({
                   </div>
 
                   {/* Expiry date input for documents that have expiry */}
-                  {docType.hasExpiry && existingDocs.length === 0 && (
+                  {docType.hasExpiry && (
                     <div className="space-y-1.5">
                       <Label className="text-xs">
                         Expiry Date <span className="text-destructive">*</span>
@@ -390,9 +390,11 @@ export default function StepAgreement({
                         }}
                         className="max-w-[200px]"
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Set expiry date before uploading
-                      </p>
+                      {existingDocs.length === 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          Set expiry date before uploading
+                        </p>
+                      )}
                     </div>
                   )}
 

@@ -291,9 +291,15 @@ router.get("/properties/:id", async (req: Request, res: Response) => {
       FROM st_reviews WHERE property_id = ${id}
     `);
 
+    // Derive coverPhoto from the photos array (first cover photo, or first photo)
+    const coverPhoto = photosResult.rows.find((p: any) => p.isCover)?.url
+      || photosResult.rows[0]?.url
+      || null;
+
     return res.json({
       ...property,
       acceptedPaymentMethods: property.acceptedPaymentMethods ? JSON.parse(property.acceptedPaymentMethods) : [],
+      coverPhoto,
       photos: photosResult.rows,
       amenities: amenResult.rows.map((r: any) => r.amenityKey),
       policies: polResult.rows,

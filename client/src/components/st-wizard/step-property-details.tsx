@@ -22,8 +22,10 @@ import {
   Key,
   Minus,
   Plus,
+  Search,
+  Loader2,
 } from "lucide-react";
-import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -102,6 +104,14 @@ function MapClickHandler({
       onClick(e.latlng.lat, e.latlng.lng);
     },
   });
+  return null;
+}
+
+function MapRecenter({ lat, lng }: { lat: number; lng: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.flyTo([lat, lng], 16, { duration: 1 });
+  }, [map, lat, lng]);
   return null;
 }
 
@@ -185,6 +195,34 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
   const [longitude, setLongitude] = useState(property.longitude || "");
   const [areaId, setAreaId] = useState(property.areaId || "");
   const [mapSearch, setMapSearch] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [recenterTo, setRecenterTo] = useState<{ lat: number; lng: number } | null>(null);
+
+  const handleLocationSearch = async () => {
+    const q = mapSearch.trim();
+    if (!q) return;
+    setSearchLoading(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`
+      );
+      const data = await res.json();
+      if (data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lng = parseFloat(data[0].lon);
+        const latStr = lat.toFixed(6);
+        const lngStr = lng.toFixed(6);
+        setLatitude(latStr);
+        setLongitude(lngStr);
+        onUpdate({ latitude: latStr, longitude: lngStr });
+        setRecenterTo({ lat, lng });
+      }
+    } catch {
+      // Silently fail — user can still click the map
+    } finally {
+      setSearchLoading(false);
+    }
+  };
 
   // Parking
   const [parkingSpaces, setParkingSpaces] = useState(property.parkingSpaces ?? 0);
@@ -569,11 +607,26 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
         {/* Property Location — Map */}
         <div className="mt-4 space-y-3">
           <Label>Property Location</Label>
-          <Input
-            value={mapSearch}
-            onChange={(e) => setMapSearch(e.target.value)}
-            placeholder="Search location (coming soon)"
-          />
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={mapSearch}
+                onChange={(e) => setMapSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleLocationSearch()}
+                placeholder="Search for an address or area..."
+                className="pl-10"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleLocationSearch}
+              disabled={searchLoading || !mapSearch.trim()}
+            >
+              {searchLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
+            </Button>
+          </div>
 
           <div className="h-[300px] rounded-md overflow-hidden border">
             <MapContainer
@@ -587,6 +640,9 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
               <MapClickHandler onClick={handleMapClick} />
+              {recenterTo && (
+                <MapRecenter lat={recenterTo.lat} lng={recenterTo.lng} />
+              )}
               {latitude && longitude && (
                 <Marker
                   position={[parseFloat(latitude), parseFloat(longitude)]}

@@ -78,7 +78,11 @@ router.get("/payment-details/:propertyId", requireAuth, async (req: Request, res
       WHERE p.id = ${propertyId} AND p.status = 'active'
     `);
     if (result.rows.length === 0) return res.status(404).json({ error: "Property not found" });
-    return res.json(result.rows[0]);
+    const row = result.rows[0] as any;
+    return res.json({
+      ...row,
+      acceptedPaymentMethods: row.acceptedPaymentMethods ? JSON.parse(row.acceptedPaymentMethods) : [],
+    });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
