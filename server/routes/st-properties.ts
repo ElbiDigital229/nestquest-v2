@@ -206,12 +206,14 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const userId = req.session.userId!;
 
-    // Per-property breakdown
+    // Per-property breakdown (include fee type)
     const propertyResult = await db.execute(sql`
       SELECT
         p.id, p.public_name AS "publicName", p.building_name AS "buildingName", p.unit_number AS "unitNumber",
+        p.commission_type AS "commissionType",
+        p.commission_value AS "commissionValue",
         COUNT(b.id)::int AS "bookingCount",
-        COALESCE(SUM(b.subtotal::decimal + b.tourism_tax::decimal + b.vat::decimal), 0) AS "totalIncome",
+        COALESCE(SUM(b.total_amount::decimal), 0) AS "totalIncome",
         COALESCE(SUM(b.commission_amount::decimal), 0) AS "commission",
         COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "ownerPayout"
       FROM st_properties p
@@ -219,16 +221,21 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
         AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
       WHERE p.pm_user_id = ${userId}
       GROUP BY p.id
-      ORDER BY COALESCE(SUM(b.commission_amount::decimal), 0) DESC
+      ORDER BY COALESCE(SUM(b.total_amount::decimal), 0) DESC
     `);
 
-    // Totals
+    // Totals split by commission type
     const totalsResult = await db.execute(sql`
       SELECT
         COUNT(b.id)::int AS "totalBookings",
-        COALESCE(SUM(b.subtotal::decimal + b.tourism_tax::decimal + b.vat::decimal), 0) AS "totalBookingIncome",
+        COALESCE(SUM(b.total_amount::decimal), 0) AS "totalBookingIncome",
         COALESCE(SUM(b.commission_amount::decimal), 0) AS "totalCommission",
-        COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "totalOwnerPayouts"
+        COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "totalOwnerPayouts",
+        COALESCE(SUM(CASE WHEN b.commission_type = 'percentage_per_booking' THEN b.commission_amount::decimal ELSE 0 END), 0) AS "percentageEarnings",
+        COALESCE(SUM(CASE WHEN b.commission_type = 'percentage_per_booking' THEN b.total_amount::decimal ELSE 0 END), 0) AS "percentageRevenue",
+        COUNT(CASE WHEN b.commission_type = 'percentage_per_booking' THEN 1 END)::int AS "percentageBookings",
+        COALESCE(SUM(CASE WHEN b.commission_type = 'fixed_monthly' THEN b.total_amount::decimal ELSE 0 END), 0) AS "fixedRevenue",
+        COUNT(CASE WHEN b.commission_type = 'fixed_monthly' THEN 1 END)::int AS "fixedBookings"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       WHERE p.pm_user_id = ${userId}
@@ -236,12 +243,24 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
     `);
     const totals = (totalsResult.rows[0] || {}) as any;
 
-    // Recent bookings with commission
+    // Fixed monthly fee income (sum of distinct property monthly fees)
+    const fixedFeeResult = await db.execute(sql`
+      SELECT COALESCE(SUM(p.commission_value::decimal), 0) AS "monthlyFixedTotal"
+      FROM st_properties p
+      WHERE p.pm_user_id = ${userId}
+        AND p.commission_type = 'fixed_monthly'
+        AND p.status = 'active'
+    `);
+    const monthlyFixedTotal = parseFloat((fixedFeeResult.rows[0] as any)?.monthlyFixedTotal || "0");
+
+    // All bookings with commission details
     const recentResult = await db.execute(sql`
       SELECT
         b.id, b.status,
         b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
         b.total_amount AS "totalAmount", b.commission_amount AS "commission",
+        b.commission_type AS "commissionType", b.commission_value AS "commissionValue",
+        b.source, b.payment_status AS "paymentStatus",
         b.created_at AS "createdAt",
         p.public_name AS "propertyName",
         COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName"
@@ -250,8 +269,8 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
       LEFT JOIN guests g ON g.user_id = b.guest_user_id
       WHERE p.pm_user_id = ${userId}
         AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
-      ORDER BY b.created_at DESC
-      LIMIT 20
+      ORDER BY b.check_in_date DESC
+      LIMIT 50
     `);
 
     return res.json({
@@ -259,6 +278,14 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
       totalBookings: totals.totalBookings || 0,
       totalBookingIncome: parseFloat(totals.totalBookingIncome || "0").toFixed(2),
       totalOwnerPayouts: parseFloat(totals.totalOwnerPayouts || "0").toFixed(2),
+      // Percentage breakdown
+      percentageEarnings: parseFloat(totals.percentageEarnings || "0").toFixed(2),
+      percentageRevenue: parseFloat(totals.percentageRevenue || "0").toFixed(2),
+      percentageBookings: totals.percentageBookings || 0,
+      // Fixed breakdown
+      fixedRevenue: parseFloat(totals.fixedRevenue || "0").toFixed(2),
+      fixedBookings: totals.fixedBookings || 0,
+      monthlyFixedTotal: monthlyFixedTotal.toFixed(2),
       properties: propertyResult.rows,
       recentBookings: recentResult.rows,
     });
@@ -601,6 +628,11 @@ router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request
       "poUserId", "commissionType", "commissionValue",
       "acquisitionType", "confirmed", "wizardStep", "status",
     ];
+
+    // Block direct status changes to "active" — must use POST /:id/publish
+    if (req.body.status === "active") {
+      return res.status(400).json({ error: "Use the publish endpoint to activate a property" });
+    }
 
     const updates: Record<string, any> = {};
     for (const field of allowedFields) {

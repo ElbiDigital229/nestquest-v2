@@ -26,6 +26,9 @@ import {
   FileText,
   BarChart3,
   Handshake,
+  XCircle,
+  DollarSign,
+  Contact,
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
@@ -79,7 +82,10 @@ const roleNavItems: Record<string, NavItem[]> = {
 const stNavItems: NavItem[] = [
   { label: "ST Properties", href: "/portal/st-properties", icon: Home },
   { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
+  { label: "Pricing", href: "/portal/st-pricing", icon: DollarSign },
   { label: "Reviews", href: "/portal/st-reviews", icon: Star },
+  { label: "Cancellations", href: "/portal/st-cancellations", icon: XCircle },
+  { label: "Guests", href: "/portal/st-guests", icon: Contact },
 ];
 
 // Cleaner ops sub-nav

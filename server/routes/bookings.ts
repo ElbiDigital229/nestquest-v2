@@ -443,6 +443,126 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// ── GET /api/bookings/guests — All guests who have booked PM's properties
+router.get("/guests", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+  try {
+    const pmId = await getPmUserId(req);
+
+    // Get unique guests with their booking stats
+    const result = await db.execute(sql`
+      SELECT
+        u.id AS "userId",
+        COALESCE(g.full_name, b.guest_name) AS "name",
+        u.email,
+        u.phone,
+        g.nationality,
+        g.kyc_status AS "kycStatus",
+        COUNT(b.id)::int AS "totalBookings",
+        COUNT(CASE WHEN b.status = 'completed' THEN 1 END)::int AS "completedBookings",
+        COUNT(CASE WHEN b.status = 'cancelled' THEN 1 END)::int AS "cancelledBookings",
+        COUNT(CASE WHEN b.status IN ('confirmed', 'checked_in') THEN 1 END)::int AS "activeBookings",
+        COALESCE(SUM(CASE WHEN b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed') THEN b.total_amount::decimal ELSE 0 END), 0) AS "totalSpent",
+        MIN(b.check_in_date) AS "firstBooking",
+        MAX(b.check_in_date) AS "lastBooking",
+        MAX(b.created_at) AS "lastActivity"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      JOIN users u ON u.id = b.guest_user_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE p.pm_user_id = ${pmId}
+        AND b.guest_user_id IS NOT NULL
+      GROUP BY u.id, g.full_name, b.guest_name, u.email, u.phone, g.nationality, g.kyc_status
+      ORDER BY MAX(b.created_at) DESC
+    `);
+
+    return res.json(result.rows);
+  } catch (error: any) {
+    console.error("[Bookings] GET /guests error:", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/bookings/guests/:guestId/history — Booking history for a specific guest
+router.get("/guests/:guestId/history", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+  try {
+    const pmId = await getPmUserId(req);
+    const { guestId } = req.params;
+
+    // Guest profile
+    const profileResult = await db.execute(sql`
+      SELECT u.id, u.email, u.phone, u.created_at AS "registeredAt",
+        g.full_name AS "fullName", g.dob, g.nationality,
+        g.country_of_residence AS "countryOfResidence", g.resident_address AS "residentAddress",
+        g.emirates_id_number AS "emiratesIdNumber", g.emirates_id_expiry AS "emiratesIdExpiry",
+        g.passport_number AS "passportNumber", g.passport_expiry AS "passportExpiry",
+        g.kyc_status AS "kycStatus"
+      FROM users u
+      LEFT JOIN guests g ON g.user_id = u.id
+      WHERE u.id = ${guestId}
+    `);
+
+    if (profileResult.rows.length === 0) {
+      return res.status(404).json({ error: "Guest not found" });
+    }
+
+    // All bookings for this guest on PM's properties
+    const bookingsResult = await db.execute(sql`
+      SELECT
+        b.id, b.status, b.source,
+        b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
+        b.total_nights AS "totalNights", b.number_of_guests AS "numberOfGuests",
+        b.total_amount AS "totalAmount", b.payment_method AS "paymentMethod",
+        b.payment_status AS "paymentStatus",
+        b.commission_type AS "commissionType", b.commission_amount AS "commissionAmount",
+        b.special_requests AS "specialRequests",
+        b.cancellation_reason AS "cancellationReason", b.decline_reason AS "declineReason",
+        b.created_at AS "createdAt",
+        p.id AS "propertyId", p.public_name AS "propertyName",
+        p.building_name AS "buildingName", p.unit_number AS "unitNumber",
+        (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
+        (SELECT rating FROM st_reviews WHERE booking_id = b.id LIMIT 1) AS "reviewRating"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE b.guest_user_id = ${guestId}
+        AND p.pm_user_id = ${pmId}
+      ORDER BY b.check_in_date DESC
+    `);
+
+    return res.json({
+      guest: profileResult.rows[0],
+      bookings: bookingsResult.rows,
+    });
+  } catch (error: any) {
+    console.error("[Bookings] GET /guests/:id/history error:", error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/bookings/cancellations — All cancelled/declined bookings for PM's properties
+router.get("/cancellations", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+  try {
+    const pmId = await getPmUserId(req);
+    const result = await db.execute(sql`
+      SELECT b.id, b.status, b.check_in_date AS "checkIn", b.check_out_date AS "checkOut",
+        b.cancelled_at AS "cancelledAt", b.cancellation_reason AS "cancellationReason",
+        b.declined_at AS "declinedAt", b.decline_reason AS "declineReason",
+        b.refund_amount AS "refundAmount", b.total_amount AS "totalAmount",
+        'AED' AS currency,
+        p.public_name AS "propertyName",
+        COALESCE(g.full_name, b.guest_name) AS "guestName"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      WHERE p.pm_user_id = ${pmId}
+        AND b.status IN ('cancelled', 'declined')
+      ORDER BY COALESCE(b.cancelled_at, b.declined_at) DESC
+    `);
+    return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // ── GET /api/bookings/:id ─────────────────────────────
 // Booking detail (role-filtered)
 router.get("/:id", requireAuth, async (req: Request, res: Response) => {
@@ -590,18 +710,22 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       checkoutRecord: checkout.rows[0] || null,
     };
 
-    // Add lock PIN info for PM/PO/Guest
+    // Add lock PIN info for PM/PO/Guest (gracefully skip if tables don't exist yet)
     if (isGuest || isPm || isPo || userRole === "PM_TEAM_MEMBER" || userRole === "SUPER_ADMIN") {
-      const pinResult = await db.execute(sql`
-        SELECT p.id, p.pin, p.status, p.valid_from AS "validFrom", p.valid_until AS "validUntil",
-          p.created_at AS "createdAt", p.deactivated_at AS "deactivatedAt",
-          l.name AS "lockName", l.brand AS "lockBrand", l.location AS "lockLocation"
-        FROM st_lock_pins p
-        JOIN st_property_locks l ON l.id = p.lock_id
-        WHERE p.booking_id = ${id}
-        ORDER BY p.created_at DESC
-      `);
-      response.lockPins = pinResult.rows;
+      try {
+        const pinResult = await db.execute(sql`
+          SELECT p.id, p.pin, p.status, p.valid_from AS "validFrom", p.valid_until AS "validUntil",
+            p.created_at AS "createdAt", p.deactivated_at AS "deactivatedAt",
+            l.name AS "lockName", l.brand AS "lockBrand", l.location AS "lockLocation"
+          FROM st_lock_pins p
+          JOIN st_property_locks l ON l.id = p.lock_id
+          WHERE p.booking_id = ${id}
+          ORDER BY p.created_at DESC
+        `);
+        response.lockPins = pinResult.rows;
+      } catch {
+        response.lockPins = [];
+      }
     }
 
     // PM-only fields

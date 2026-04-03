@@ -31,6 +31,9 @@ import AdminPlans from "@/pages/admin/plans";
 import AdminTransactions from "@/pages/admin/transactions";
 import PlanSelection from "@/pages/portal/plan-selection";
 import Checkout from "@/pages/portal/checkout";
+import StCancellations from "@/pages/portal/st-cancellations";
+import StPricing from "@/pages/portal/st-pricing";
+import StGuests from "@/pages/portal/st-guests";
 import StProperties from "@/pages/portal/st-properties";
 import StPropertyWizard from "@/pages/portal/st-property-wizard";
 import StPropertyView from "@/pages/portal/st-property-view";
@@ -162,6 +165,27 @@ export default function App() {
             </PortalLayout>
           </ProtectedRoute>
         )}
+      </Route>
+      <Route path="/portal/st-cancellations">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <StCancellations />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/st-guests">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout>
+            <StGuests />
+          </PortalLayout>
+        </ProtectedRoute>
+      </Route>
+      <Route path="/portal/st-pricing">
+        <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
+          <PortalLayout fullWidth>
+            <StPricing />
+          </PortalLayout>
+        </ProtectedRoute>
       </Route>
       <Route path="/portal/st-properties">
         <ProtectedRoute roles={["PROPERTY_MANAGER", "PM_TEAM_MEMBER"]}>
