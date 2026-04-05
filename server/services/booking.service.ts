@@ -19,6 +19,7 @@ import { logPropertyActivity } from "../utils/property-activity";
 import { sanitize } from "../utils/sanitize";
 import logger from "../utils/logger";
 import { fireTrigger } from "../utils/message-template-trigger";
+import { NotFoundError, ConflictError, ValidationError, UnprocessableError } from "../errors/index";
 
 // ── Types ──────────────────────────────────────────────
 
@@ -341,17 +342,17 @@ export async function createBooking(input: CreateBookingInput): Promise<{ id: st
   `);
 
   if (propResult.rows.length === 0) {
-    throw Object.assign(new Error("Property not found or not active"), { status: 404 });
+    throw new NotFoundError("Property not found or not active");
   }
 
   const prop = propResult.rows[0] as any;
   const { totalNights, weekdayNights, weekendNights } = calculateNights(checkIn, checkOut);
 
   if (totalNights < (prop.minimum_stay || 1)) {
-    throw Object.assign(new Error(`Minimum stay is ${prop.minimum_stay || 1} nights`), { status: 400 });
+    throw new ValidationError(`Minimum stay is  nights`);
   }
   if (guests > prop.max_guests) {
-    throw Object.assign(new Error(`Maximum ${prop.max_guests} guests allowed`), { status: 400 });
+    throw new ValidationError(`Maximum  guests allowed`);
   }
 
   const nightlyRate = parseFloat(prop.nightly_rate || "0");
@@ -386,7 +387,7 @@ export async function createBooking(input: CreateBookingInput): Promise<{ id: st
   await withTransaction(async (tx) => {
     const availability = await checkAvailabilityForUpdate(tx, propertyId, checkIn, checkOut);
     if (!availability.available) {
-      throw Object.assign(new Error(availability.reason), { status: 409 });
+      throw new ConflictError(availability.reason);
     }
 
     await tx.execute(sql`
@@ -463,16 +464,13 @@ export async function confirmBooking(input: ConfirmBookingInput): Promise<void> 
   `);
 
   if (bookingResult.rows.length === 0) {
-    throw Object.assign(new Error("Booking not found"), { status: 404 });
+    throw new NotFoundError("Booking not found");
   }
 
   const booking = bookingResult.rows[0] as any;
 
   if (booking.status !== "requested") {
-    throw Object.assign(
-      new Error(`Cannot confirm a booking with status: ${booking.status}`),
-      { status: 400 }
-    );
+    throw new ValidationError(`Cannot confirm a booking with status: `);
   }
 
   // KYC gate: registered guests must have verified KYC before booking can be confirmed
@@ -482,10 +480,7 @@ export async function confirmBooking(input: ConfirmBookingInput): Promise<void> 
     `);
     const guest = guestResult.rows[0] as any;
     if (guest && guest.kyc_status !== "verified") {
-      throw Object.assign(
-        new Error("Guest KYC is not verified. Ask the guest to complete identity verification before confirming."),
-        { status: 400 }
-      );
+      throw new UnprocessableError("Guest KYC is not verified. Ask the guest to complete identity verification before confirming.");
     }
   }
 
@@ -613,17 +608,14 @@ export async function cancelBooking(input: CancelBookingInput): Promise<{ refund
   `);
 
   if (bookingResult.rows.length === 0) {
-    throw Object.assign(new Error("Booking not found"), { status: 404 });
+    throw new NotFoundError("Booking not found");
   }
 
   const booking = bookingResult.rows[0] as any;
   const cancellableStatuses = ["requested", "confirmed"];
 
   if (!cancellableStatuses.includes(booking.status)) {
-    throw Object.assign(
-      new Error(`Cannot cancel a booking with status: ${booking.status}`),
-      { status: 400 }
-    );
+    throw new ValidationError(`Cannot cancel a booking with status: `);
   }
 
   const refundAmount = calculateRefund(

@@ -14,6 +14,8 @@ import {
   cancelBooking,
 } from "../services/booking.service";
 import { getPmUserId } from "../middleware/pm-permissions";
+import { createBookingSchema, cancelBookingSchema } from "../schemas/booking.schema";
+import { ValidationError } from "../errors/index";
 import logger from "../utils/logger";
 
 /**
@@ -110,11 +112,18 @@ export async function createBookingHandler(req: Request, res: Response): Promise
   if (userRole === "PM_TEAM_MEMBER") return res.status(403).json({ error: "Team members should use the manual booking feature" });
   if (userRole === "CLEANER") return res.status(403).json({ error: "Cleaners cannot create bookings" });
 
-  const { propertyId, checkIn, checkOut, guests, paymentMethod, specialRequests } = req.body;
-
-  if (!propertyId || !checkIn || !checkOut || !guests) {
-    return res.status(400).json({ error: "Missing required fields" });
+  const parsed = createBookingSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const details: Record<string, string[]> = {};
+    for (const issue of parsed.error.issues) {
+      const key = issue.path.join(".") || "_root";
+      if (!details[key]) details[key] = [];
+      details[key].push(issue.message);
+    }
+    throw new ValidationError("Validation failed", details);
   }
+
+  const { propertyId, checkIn, checkOut, guests, paymentMethod, specialRequests } = parsed.data;
 
   const dateCheck = validateBookingDates(checkIn, checkOut);
   if (!dateCheck.valid) return res.status(400).json({ error: dateCheck.error });
@@ -125,7 +134,7 @@ export async function createBookingHandler(req: Request, res: Response): Promise
       guestUserId: req.session.userId!,
       checkIn,
       checkOut,
-      guests: parseInt(guests),
+      guests,
       paymentMethod,
       specialRequests,
     });
@@ -184,7 +193,19 @@ export async function confirmBookingHandler(req: Request, res: Response): Promis
 
 export async function cancelBookingHandler(req: Request, res: Response): Promise<Response> {
   const { id } = req.params;
-  const { reason } = req.body;
+
+  const parsed = cancelBookingSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const details: Record<string, string[]> = {};
+    for (const issue of parsed.error.issues) {
+      const key = issue.path.join(".") || "_root";
+      if (!details[key]) details[key] = [];
+      details[key].push(issue.message);
+    }
+    throw new ValidationError("Validation failed", details);
+  }
+
+  const { reason } = parsed.data;
 
   try {
     const result = await cancelBooking({

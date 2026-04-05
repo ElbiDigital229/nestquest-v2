@@ -8,6 +8,14 @@ import { recordBookingIncome, recordBookingRefund, recordDepositReturn, recordOw
 import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
 import { sanitize } from "../utils/sanitize";
 import { bookingEmitter } from "../events/booking-emitter";
+import { validate } from "../middleware/validate";
+import {
+  manualBookingSchema,
+  cancelBookingSchema,
+  reviewSchema,
+  reviewResponseSchema,
+} from "../schemas/booking.schema";
+import { blockDatesSchema } from "../schemas/property.schema";
 import {
   calculatePriceHandler,
   createBookingHandler,
@@ -1040,7 +1048,7 @@ router.patch("/:id/decline", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), 
 
 // ── POST /api/bookings/manual ─────────────────────────
 // PM creates a booking manually (confirmed immediately)
-router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.post("/manual", requireRole("PROPERTY_MANAGER"), validate(manualBookingSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const {
@@ -1049,20 +1057,9 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
       paymentMethod, totalAmountOverride, notes,
     } = req.body;
 
-    if (!propertyId || !checkIn || !checkOut || !guests) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    // Validate dates
+    // Validate that check-in is not in the past (business rule beyond schema)
     const checkInDate = new Date(checkIn + "T00:00:00");
     const checkOutDate = new Date(checkOut + "T00:00:00");
-    if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
-      return res.status(400).json({ error: "Invalid date format" });
-    }
-    if (checkOutDate <= checkInDate) {
-      return res.status(400).json({ error: "Check-out date must be after check-in date" });
-    }
-    // PM cannot create manual bookings with past check-in dates
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     if (checkInDate < today) {
@@ -1469,14 +1466,10 @@ router.patch("/:id/complete", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"),
 });
 
 // ── POST /api/bookings/block-dates ────────────────────
-router.post("/block-dates", requireRole("PROPERTY_MANAGER"), async (req: Request, res: Response) => {
+router.post("/block-dates", requireRole("PROPERTY_MANAGER"), validate(blockDatesSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { propertyId, startDate, endDate, reason } = req.body;
-
-    if (!propertyId || !startDate || !endDate) {
-      return res.status(400).json({ error: "propertyId, startDate, and endDate are required" });
-    }
 
     // Validate dates
     const start = new Date(startDate + "T00:00:00");
@@ -1755,13 +1748,11 @@ router.patch("/:id/payout", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), r
 // ══════════════════════════════════════════════════════
 
 // Submit a review (guest only, after checkout/completed)
-router.post("/:id/review", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/review", requireAuth, validate(reviewSchema), async (req: Request, res: Response) => {
   try {
     const userId = req.session.userId!;
     const { id } = req.params;
     const { rating, title, description } = req.body;
-
-    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: "Rating must be 1-5" });
 
     // Verify booking belongs to guest and is checked_out or completed
     const bookingResult = await db.execute(sql`
@@ -1823,15 +1814,11 @@ router.get("/:id/review", requireAuth, async (req: Request, res: Response) => {
 });
 
 // ── PATCH /api/bookings/:id/review/response — PM responds to a guest review
-router.patch("/:id/review/response", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+router.patch("/:id/review/response", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), validate(reviewResponseSchema), async (req: Request, res: Response) => {
   try {
     const pmId = await getPmUserId(req);
     const { id } = req.params;
     const { response } = req.body;
-
-    if (!response?.trim()) {
-      return res.status(400).json({ error: "Response text is required" });
-    }
 
     // Verify the booking belongs to this PM
     const bookingCheck = await db.execute(sql`

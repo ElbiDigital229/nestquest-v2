@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  # ── Application ──────────────────────────────────────────────────────────────
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://nestquest:nestquest@postgres:5432/nestquest
+      REDIS_URL: redis://valkey:6379
+      SESSION_SECRET: ${SESSION_SECRET}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      # Optional — set in .env or shell environment
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    networks:
+      - nestquest
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nestquest
+      POSTGRES_USER: nestquest
+      POSTGRES_PASSWORD: nestquest
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestquest -d nestquest"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nestquest
+
+  # ── Valkey (Redis-compatible) ─────────────────────────────────────────────────
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: valkey-server --save 60 1 --loglevel warning
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - nestquest
+
+volumes:
+  pgdata:
+  valkeydata:
+  uploads:
+
+networks:
+  nestquest:
+    driver: bridge

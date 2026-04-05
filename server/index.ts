@@ -37,6 +37,7 @@ import { requestId } from "./middleware/request-id";
 import { buildSessionStore } from "./utils/session-store";
 import { setupSwagger } from "./utils/swagger";
 import logger from "./utils/logger";
+import { AppError, ValidationError } from "./errors/index";
 
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -258,6 +259,22 @@ async function startServer(): Promise<void> {
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const requestId = (req as any).requestId;
 
+    // Known application errors — don't log as errors, don't send to Sentry
+    if (err instanceof AppError) {
+      if (err.status >= 500) {
+        logger.error({ err, url: req.url, method: req.method, requestId }, err.message);
+      } else {
+        logger.warn({ status: err.status, message: err.message, url: req.url }, "App error");
+      }
+
+      const body: Record<string, any> = { error: err.message, requestId };
+      if (err instanceof ValidationError && err.details) {
+        body.details = err.details;
+      }
+      return res.status(err.status).json(body);
+    }
+
+    // Unexpected errors — log fully + send to Sentry
     if (process.env.SENTRY_DSN) {
       Sentry.captureException(err, {
         extra: { url: req.url, method: req.method, requestId },
@@ -269,7 +286,7 @@ async function startServer(): Promise<void> {
     const status = err.status || err.statusCode || 500;
     res.status(status).json({
       error: isProduction ? "An unexpected error occurred" : err.message,
-      requestId, // Always include so users can report the exact failing request
+      requestId,
     });
   });
 
