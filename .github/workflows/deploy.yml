@@ -24,14 +24,14 @@ jobs:
         run: npm run build
 
       - name: Deploy to EC2
-        uses: easingthemes/ssh-deploy@v5
+        uses: burnett01/rsync-deployments@7.0.1
         with:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.EC2_HOST }}
-          REMOTE_USER: ubuntu
-          TARGET: /home/ubuntu/nestquest/
-          SOURCE: ./
-          EXCLUDE: "node_modules/, .git/, .github/"
+          switches: -avzr --delete --exclude='node_modules' --exclude='.git' --exclude='.env'
+          path: ./
+          remote_path: /home/ubuntu/nestquest/
+          remote_host: ${{ secrets.EC2_HOST }}
+          remote_user: ubuntu
+          remote_key: ${{ secrets.EC2_SSH_KEY }}
 
       - name: Install deps and restart on EC2
         uses: appleboy/ssh-action@v1
