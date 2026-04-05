@@ -130,7 +130,7 @@ export default function CalendarOverview() {
               {dates.map(d => {
                 const dt = new Date(d + "T12:00:00");
                 const isToday = d === today;
-                const isWeekend = dt.getDay() === 5 || dt.getDay() === 6;
+                const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                 return (
                   <th key={d} className={`px-0.5 py-2 text-center font-normal min-w-[36px] ${isToday ? "bg-primary/10" : isWeekend ? "bg-gray-100" : ""}`}>
                     <div className="text-[10px] text-muted-foreground">{dt.toLocaleDateString("en-US", { weekday: "narrow" })}</div>
@@ -160,7 +160,7 @@ export default function CalendarOverview() {
                     const isBlocked = maps?.blocked.has(d);
                     const customPrice = maps?.pricing.get(d);
                     const dt = new Date(d + "T12:00:00");
-                    const isWeekend = dt.getDay() === 5 || dt.getDay() === 6;
+                    const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
                     const price = customPrice ? parseFloat(customPrice.price) : (isWeekend ? weekendRate : defaultRate);
                     const isToday = d === today;
 

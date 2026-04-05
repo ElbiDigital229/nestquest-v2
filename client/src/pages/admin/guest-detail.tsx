@@ -57,6 +57,11 @@ import {
   X,
   Save,
   UploadCloud,
+  TrendingUp,
+  Receipt,
+  Banknote,
+  ExternalLink,
+  ZoomIn,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -406,6 +411,485 @@ function AdminPropertiesTab({ guestId, userRole, userName }: { guestId: string; 
   );
 }
 
+// ─── Guest Bookings Tab ─────────────────────────────────────────────────────
+
+const BOOKING_STATUS_CLASSES: Record<string, string> = {
+  confirmed: "border-green-500 text-green-700 bg-green-50",
+  pending: "border-yellow-500 text-yellow-700 bg-yellow-50",
+  cancelled: "border-red-500 text-red-700 bg-red-50",
+  completed: "border-blue-500 text-blue-700 bg-blue-50",
+};
+
+function BookingDetailSheet({ bookingId, onClose }: { bookingId: string; onClose: () => void }) {
+  const { data: b, isLoading } = useQuery<any>({
+    queryKey: [`/admin/bookings/${bookingId}`],
+    queryFn: () => api.get(`/admin/bookings/${bookingId}`),
+    enabled: !!bookingId,
+  });
+
+  const fmt = (d: string | null) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
+  const money = (v: any) => v != null ? `AED ${Number(v).toLocaleString()}` : "—";
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      {/* Panel */}
+      <div className="relative z-10 w-full max-w-lg bg-background shadow-xl flex flex-col h-full overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0">
+          <div>
+            <h2 className="font-semibold text-lg">Booking Detail</h2>
+            {b && <p className="text-xs text-muted-foreground font-mono">#{b.id?.slice(0, 8).toUpperCase()}</p>}
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {isLoading && (
+          <div className="flex items-center justify-center flex-1">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+
+        {b && (
+          <div className="p-6 space-y-6">
+            {/* Status + source */}
+            <div className="flex items-center gap-3">
+              <Badge variant="outline" className={BOOKING_STATUS_CLASSES[b.status] || ""}>
+                {b.status}
+              </Badge>
+              {b.source && (
+                <span className="text-xs text-muted-foreground capitalize bg-muted px-2 py-0.5 rounded">{b.source}</span>
+              )}
+            </div>
+
+            {/* Property */}
+            <div className="space-y-1">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Property</p>
+              <p className="font-medium">{b.propertyName || "—"}</p>
+              <p className="text-sm text-muted-foreground">{b.propertyCity || ""} {b.propertyType ? `· ${b.propertyType}` : ""}</p>
+            </div>
+
+            <Separator />
+
+            {/* Dates */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Check-in</p>
+                <p className="font-medium">{fmt(b.check_in_date ?? b.checkInDate)}</p>
+                {b.check_in_time && <p className="text-sm text-muted-foreground">{b.check_in_time}</p>}
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Check-out</p>
+                <p className="font-medium">{fmt(b.check_out_date ?? b.checkOutDate)}</p>
+                {b.check_out_time && <p className="text-sm text-muted-foreground">{b.check_out_time}</p>}
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Nights</p>
+                <p className="font-medium">{b.total_nights ?? b.totalNights ?? "—"}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Guests</p>
+                <p className="font-medium">{b.number_of_guests ?? b.numberOfGuests ?? "—"}</p>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Financials */}
+            <div className="space-y-1">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Financials</p>
+              <div className="rounded-lg border divide-y text-sm">
+                <div className="flex justify-between px-3 py-2">
+                  <span className="text-muted-foreground">Total Amount</span>
+                  <span className="font-medium">{money(b.total_amount ?? b.totalAmount)}</span>
+                </div>
+                {(b.security_deposit_amount ?? b.securityDepositAmount) != null && (
+                  <div className="flex justify-between px-3 py-2">
+                    <span className="text-muted-foreground">Security Deposit</span>
+                    <span>{money(b.security_deposit_amount ?? b.securityDepositAmount)}</span>
+                  </div>
+                )}
+                {(b.commission_amount ?? b.commissionAmount) != null && (
+                  <div className="flex justify-between px-3 py-2">
+                    <span className="text-muted-foreground">Commission</span>
+                    <span>{money(b.commission_amount ?? b.commissionAmount)}</span>
+                  </div>
+                )}
+                {(b.owner_payout_amount ?? b.ownerPayoutAmount) != null && (
+                  <div className="flex justify-between px-3 py-2">
+                    <span className="text-muted-foreground">Owner Payout</span>
+                    <span>{money(b.owner_payout_amount ?? b.ownerPayoutAmount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between px-3 py-2">
+                  <span className="text-muted-foreground">Payment Method</span>
+                  <span className="capitalize">{b.payment_method ?? b.paymentMethod ?? "—"}</span>
+                </div>
+                <div className="flex justify-between px-3 py-2">
+                  <span className="text-muted-foreground">Payment Status</span>
+                  <span className="capitalize">{b.payment_status ?? b.paymentStatus ?? "—"}</span>
+                </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* People */}
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">People</p>
+              <div className="rounded-lg border divide-y text-sm">
+                <div className="px-3 py-2">
+                  <p className="text-muted-foreground text-xs mb-0.5">Guest</p>
+                  <p className="font-medium">{b.guestName || b.guest_name || "—"}</p>
+                  {b.guestEmail && <p className="text-muted-foreground text-xs">{b.guestEmail}</p>}
+                  {b.guestPhone && <p className="text-muted-foreground text-xs">{b.guestPhone}</p>}
+                </div>
+                {b.pmName && (
+                  <div className="px-3 py-2">
+                    <p className="text-muted-foreground text-xs mb-0.5">Property Manager</p>
+                    <p className="font-medium">{b.pmName}</p>
+                    {b.pmEmail && <p className="text-muted-foreground text-xs">{b.pmEmail}</p>}
+                  </div>
+                )}
+                {b.ownerName && (
+                  <div className="px-3 py-2">
+                    <p className="text-muted-foreground text-xs mb-0.5">Owner</p>
+                    <p className="font-medium">{b.ownerName}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Special requests */}
+            {(b.special_requests ?? b.specialRequests) && (
+              <>
+                <Separator />
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Special Requests</p>
+                  <p className="text-sm">{b.special_requests ?? b.specialRequests}</p>
+                </div>
+              </>
+            )}
+
+            {/* Notes */}
+            {(b.internal_notes ?? b.internalNotes) && (
+              <>
+                <Separator />
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Internal Notes</p>
+                  <p className="text-sm">{b.internal_notes ?? b.internalNotes}</p>
+                </div>
+              </>
+            )}
+
+            <div className="text-xs text-muted-foreground">
+              Created {fmt(b.created_at ?? b.createdAt)}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GuestBookingsTab({ guestId }: { guestId: string }) {
+  const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
+
+  const { data: bookings = [], isLoading } = useQuery<any[]>({
+    queryKey: [`/admin/bookings`, { guestId }],
+    queryFn: () => api.get(`/admin/bookings?guestId=${guestId}`),
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!bookings.length) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-12 gap-2">
+          <Calendar className="h-8 w-8 text-muted-foreground" />
+          <p className="text-muted-foreground text-sm">No bookings found for this guest.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {selectedBookingId && (
+        <BookingDetailSheet
+          bookingId={selectedBookingId}
+          onClose={() => setSelectedBookingId(null)}
+        />
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Bookings ({bookings.length})</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-muted/30">
+                <tr>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Property</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Check-in</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Check-out</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Nights</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Guests</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Total</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Status</th>
+                  <th className="text-left px-4 py-2 font-medium text-muted-foreground">Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bookings.map((b: any) => (
+                  <tr
+                    key={b.id}
+                    className="border-b last:border-0 hover:bg-muted/40 cursor-pointer"
+                    onClick={() => setSelectedBookingId(b.id)}
+                  >
+                    <td className="px-4 py-2 font-medium">{b.propertyName || "—"}</td>
+                    <td className="px-4 py-2">{b.checkInDate ? new Date(b.checkInDate).toLocaleDateString() : "—"}</td>
+                    <td className="px-4 py-2">{b.checkOutDate ? new Date(b.checkOutDate).toLocaleDateString() : "—"}</td>
+                    <td className="px-4 py-2">{b.totalNights ?? "—"}</td>
+                    <td className="px-4 py-2">{b.numberOfGuests ?? "—"}</td>
+                    <td className="px-4 py-2">{b.totalAmount ? `AED ${Number(b.totalAmount).toLocaleString()}` : "—"}</td>
+                    <td className="px-4 py-2">
+                      <Badge variant="outline" className={BOOKING_STATUS_CLASSES[b.status] || ""}>
+                        {b.status}
+                      </Badge>
+                    </td>
+                    <td className="px-4 py-2 text-muted-foreground capitalize">{b.source || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+// ─── Guest Reviews Tab ──────────────────────────────────────────────────────
+
+function GuestReviewsTab({ guestId }: { guestId: string }) {
+  const { data: reviews = [], isLoading } = useQuery<any[]>({
+    queryKey: [`/admin/reviews`, { guestId }],
+    queryFn: () => api.get(`/admin/reviews?guestId=${guestId}`),
+  });
+
+  const stars = (n: number) => "★".repeat(n) + "☆".repeat(5 - n);
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!reviews.length) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center justify-center py-12 gap-2">
+          <span className="text-3xl text-muted-foreground/30">★</span>
+          <p className="text-muted-foreground text-sm">This guest hasn't left any reviews yet.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Reviews ({reviews.length})</CardTitle>
+      </CardHeader>
+      <CardContent className="divide-y p-0">
+        {reviews.map((r: any) => (
+          <div key={r.id} className="px-6 py-4 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-amber-500 text-sm tracking-wider">{stars(r.rating)}</span>
+              <span className="text-xs text-muted-foreground">
+                {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : ""}
+              </span>
+            </div>
+            <p className="font-medium text-sm">{r.propertyName}</p>
+            {r.title && <p className="text-sm font-medium text-foreground">{r.title}</p>}
+            {r.description && <p className="text-sm text-muted-foreground">{r.description}</p>}
+            {r.pmResponse && (
+              <div className="mt-2 pl-3 border-l-2 border-muted text-sm text-muted-foreground italic">
+                <span className="font-medium not-italic text-foreground">PM response: </span>
+                {r.pmResponse}
+              </div>
+            )}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Documents Tab ──────────────────────────────────────────────────────────
+
+function DocumentsTab({ p, userRole }: { p: any; userRole: string }) {
+  const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+
+  const docs = [
+    { label: "Emirates ID Front", url: p?.emiratesIdFrontUrl, expiry: p?.emiratesIdExpiry },
+    { label: "Emirates ID Back",  url: p?.emiratesIdBackUrl,  expiry: p?.emiratesIdExpiry },
+    { label: "Passport",          url: p?.passportFrontUrl,   expiry: p?.passportExpiry },
+    ...(userRole === "PROPERTY_MANAGER"
+      ? [{ label: "Trade License", url: p?.tradeLicenseUrl, expiry: p?.tradeLicenseExpiry }]
+      : []),
+  ];
+
+  const isImage = (url: string) => /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5" />
+            Documents
+          </CardTitle>
+          <CardDescription>Click a document to preview it</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/50">
+                  <th className="text-left font-medium px-4 py-3">Document</th>
+                  <th className="text-left font-medium px-4 py-3">Status</th>
+                  <th className="text-left font-medium px-4 py-3">Expiry Date</th>
+                  <th className="text-left font-medium px-4 py-3">Days Until Expiry</th>
+                  <th className="text-left font-medium px-4 py-3">View</th>
+                </tr>
+              </thead>
+              <tbody>
+                {docs.map((doc) => {
+                  const daysUntil = doc.expiry
+                    ? Math.ceil((new Date(doc.expiry).getTime() - Date.now()) / 86400000)
+                    : null;
+                  const dayColor =
+                    daysUntil === null ? "" :
+                    daysUntil <= 0 ? "text-red-600" :
+                    daysUntil <= 30 ? "text-orange-600" :
+                    daysUntil <= 90 ? "text-yellow-600" : "text-green-600";
+                  return (
+                    <tr key={doc.label} className="border-b last:border-0">
+                      <td className="px-4 py-3 font-medium">{doc.label}</td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant={doc.url ? "default" : "secondary"}
+                          className={doc.url
+                            ? "bg-green-100 text-green-700 hover:bg-green-100"
+                            : "bg-red-100 text-red-700 hover:bg-red-100"}
+                        >
+                          {doc.url ? "Uploaded" : "Missing"}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {doc.expiry ? formatDate(doc.expiry) : "—"}
+                      </td>
+                      <td className={`px-4 py-3 font-medium ${dayColor}`}>
+                        {daysUntil === null ? "—" : daysUntil <= 0
+                          ? `Expired (${Math.abs(daysUntil)} days ago)`
+                          : `${daysUntil} days`}
+                      </td>
+                      <td className="px-4 py-3">
+                        {doc.url ? (
+                          <div className="flex items-center gap-2">
+                            {isImage(doc.url) && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setPreview({ url: doc.url!, label: doc.label })}
+                              >
+                                <ZoomIn className="h-3.5 w-3.5 mr-1" />
+                                Preview
+                              </Button>
+                            )}
+                            <a
+                              href={doc.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              Open
+                            </a>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Image preview modal */}
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="relative bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <span className="font-medium text-sm">{preview.label}</span>
+              <div className="flex items-center gap-2">
+                <a
+                  href={preview.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open in new tab
+                </a>
+                <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setPreview(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+            <div className="p-4 flex justify-center bg-muted/30">
+              <img
+                src={preview.url}
+                alt={preview.label}
+                className="max-h-[70vh] max-w-full object-contain rounded"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export default function AdminGuestDetail({ id }: { id: string }) {
@@ -661,10 +1145,14 @@ export default function AdminGuestDetail({ id }: { id: string }) {
         <TabsList>
           <TabsTrigger value="profile">Profile</TabsTrigger>
           {user.role !== "GUEST" && <TabsTrigger value="linked">Linked Users</TabsTrigger>}
-          {user.role !== "GUEST" && <TabsTrigger value="messages">Messages</TabsTrigger>}
+          <TabsTrigger value="messages">Messages</TabsTrigger>
+          {user.role === "GUEST" && <TabsTrigger value="bookings">Bookings</TabsTrigger>}
+          {user.role === "GUEST" && <TabsTrigger value="reviews">Reviews</TabsTrigger>}
           <TabsTrigger value="documents">Documents</TabsTrigger>
           {user.role === "PROPERTY_MANAGER" && <TabsTrigger value="subscription">Subscription</TabsTrigger>}
           {(user.role === "PROPERTY_MANAGER" || user.role === "PROPERTY_OWNER") && <TabsTrigger value="properties">Properties</TabsTrigger>}
+          {user.role === "PROPERTY_MANAGER" && <TabsTrigger value="reports">Reports</TabsTrigger>}
+          {user.role === "PROPERTY_MANAGER" && <TabsTrigger value="settlements">Settlements</TabsTrigger>}
           <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
 
@@ -1260,60 +1748,26 @@ export default function AdminGuestDetail({ id }: { id: string }) {
           </Card>
         </TabsContent>}
 
+        {/* ─── Bookings Tab (Guest only) ─────────────────────────────────────── */}
+        {user.role === "GUEST" && (
+          <TabsContent value="bookings">
+            <GuestBookingsTab guestId={user.id} />
+          </TabsContent>
+        )}
+
+        {user.role === "GUEST" && (
+          <TabsContent value="reviews">
+            <GuestReviewsTab guestId={user.id} />
+          </TabsContent>
+        )}
+
         {/* ─── Documents Tab ─────────────────────────────────────────────────── */}
         <TabsContent value="documents">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5" />
-                Documents
-              </CardTitle>
-              <CardDescription>Document upload status and expiry tracking</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="border rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b bg-muted/50">
-                      <th className="text-left font-medium px-4 py-3">Document</th>
-                      <th className="text-left font-medium px-4 py-3">Status</th>
-                      <th className="text-left font-medium px-4 py-3">Expiry Date</th>
-                      <th className="text-left font-medium px-4 py-3">Days Until Expiry</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[
-                      { label: "Emirates ID Front", uploaded: !!p?.emiratesIdFrontUrl, expiry: p?.emiratesIdExpiry },
-                      { label: "Emirates ID Back", uploaded: !!p?.emiratesIdBackUrl, expiry: p?.emiratesIdExpiry },
-                      { label: "Passport", uploaded: !!p?.passportFrontUrl, expiry: p?.passportExpiry },
-                      ...(user.role === "PROPERTY_MANAGER" ? [{ label: "Trade License", uploaded: !!p?.tradeLicenseUrl, expiry: p?.tradeLicenseExpiry }] : []),
-                    ].map((doc) => {
-                      const daysUntil = doc.expiry ? Math.ceil((new Date(doc.expiry).getTime() - Date.now()) / 86400000) : null;
-                      const dayColor = daysUntil === null ? "" : daysUntil <= 0 ? "text-red-600" : daysUntil <= 30 ? "text-orange-600" : daysUntil <= 90 ? "text-yellow-600" : "text-green-600";
-                      return (
-                        <tr key={doc.label} className="border-b last:border-0">
-                          <td className="px-4 py-3 font-medium">{doc.label}</td>
-                          <td className="px-4 py-3">
-                            <Badge variant={doc.uploaded ? "default" : "secondary"} className={doc.uploaded ? "bg-green-100 text-green-700 hover:bg-green-100" : "bg-red-100 text-red-700 hover:bg-red-100"}>
-                              {doc.uploaded ? "Uploaded" : "Missing"}
-                            </Badge>
-                          </td>
-                          <td className="px-4 py-3 text-muted-foreground">{doc.expiry ? formatDate(doc.expiry) : "—"}</td>
-                          <td className={`px-4 py-3 font-medium ${dayColor}`}>
-                            {daysUntil === null ? "—" : daysUntil <= 0 ? `Expired (${Math.abs(daysUntil)} days ago)` : `${daysUntil} days`}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+          <DocumentsTab p={p} userRole={user.role} />
         </TabsContent>
 
         {/* ─── Messages Tab (SA read-only) ───────────────────────────────────── */}
-        {user.role !== "GUEST" && <TabsContent value="messages">
+        <TabsContent value="messages">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -1432,7 +1886,7 @@ export default function AdminGuestDetail({ id }: { id: string }) {
               )}
             </CardContent>
           </Card>
-        </TabsContent>}
+        </TabsContent>
 
         {/* ─── Subscription Tab (PM only) ────────────────────────────────────── */}
         {user.role === "PROPERTY_MANAGER" && (
@@ -1605,6 +2059,20 @@ export default function AdminGuestDetail({ id }: { id: string }) {
           </TabsContent>
         )}
 
+        {/* ─── Reports Tab (PM only) ────────────────────────────────────────── */}
+        {user.role === "PROPERTY_MANAGER" && (
+          <TabsContent value="reports">
+            <PmReportsTab pmUserId={user.id} />
+          </TabsContent>
+        )}
+
+        {/* ─── Settlements Tab (PM only) ──────────────────────────────────── */}
+        {user.role === "PROPERTY_MANAGER" && (
+          <TabsContent value="settlements">
+            <PmSettlementsTab pmUserId={user.id} />
+          </TabsContent>
+        )}
+
         {/* ─── Activity Tab ─────────────────────────────────────────────────── */}
         <TabsContent value="activity">
           <Card>
@@ -1662,6 +2130,255 @@ export default function AdminGuestDetail({ id }: { id: string }) {
         open={!!selectedLinkedGuestId}
         onClose={() => setSelectedLinkedGuestId(null)}
       />
+    </div>
+  );
+}
+
+// ─── PM Reports Tab ──────────────────────────────────────────────────────────
+
+function PmReportsTab({ pmUserId }: { pmUserId: string }) {
+  const { data, isLoading, isError, error } = useQuery<any>({
+    queryKey: ["/admin/pm-reports", pmUserId],
+    queryFn: () => api.get(`/st-properties/reports/earnings?pmUserId=${pmUserId}`),
+    enabled: !!pmUserId,
+    retry: 1,
+  });
+
+  if (isLoading) return <div className="flex justify-center py-16"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
+
+  if (isError) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-muted-foreground">
+          <TrendingUp className="h-8 w-8 mx-auto mb-3 opacity-30" />
+          <p className="font-medium text-destructive">Failed to load reports</p>
+          <p className="text-sm mt-1">{(error as any)?.message || "Unknown error"}</p>
+          <p className="text-xs mt-2 text-muted-foreground">PM ID: {pmUserId}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const fmt = (v: any) => `AED ${parseFloat(v || "0").toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5" />
+            Earnings Report
+          </CardTitle>
+          <CardDescription>Commission and revenue summary for this PM</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div className="rounded-lg border p-4 bg-emerald-50/50">
+              <p className="text-xs text-muted-foreground mb-1">Total Booking Income</p>
+              <p className="text-xl font-bold text-emerald-700">{fmt(data?.totalBookingIncome)}</p>
+              <p className="text-xs text-muted-foreground mt-1">{data?.totalBookings || 0} bookings</p>
+            </div>
+            <div className="rounded-lg border p-4 bg-purple-50/50">
+              <p className="text-xs text-muted-foreground mb-1">PM Commission Earned</p>
+              <p className="text-xl font-bold text-purple-700">{fmt(data?.totalCommission)}</p>
+            </div>
+            <div className="rounded-lg border p-4 bg-blue-50/50">
+              <p className="text-xs text-muted-foreground mb-1">Owner Payouts</p>
+              <p className="text-xl font-bold text-blue-700">{fmt(data?.totalOwnerPayouts)}</p>
+            </div>
+            <div className="rounded-lg border p-4 bg-orange-50/50">
+              <p className="text-xs text-muted-foreground mb-1">Monthly Fixed Fees</p>
+              <p className="text-xl font-bold text-orange-700">{fmt(data?.monthlyFixedTotal)}</p>
+            </div>
+          </div>
+
+          {/* Per-property breakdown */}
+          {data?.properties?.length > 0 && (
+            <>
+              <h4 className="text-sm font-semibold mb-3">Per-Property Breakdown</h4>
+              <div className="border rounded-lg overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 text-left">
+                      <th className="px-4 py-2 font-medium">Property</th>
+                      <th className="px-4 py-2 font-medium">Commission Type</th>
+                      <th className="px-4 py-2 font-medium text-center">Bookings</th>
+                      <th className="px-4 py-2 font-medium text-right">Total Income</th>
+                      <th className="px-4 py-2 font-medium text-right">Commission</th>
+                      <th className="px-4 py-2 font-medium text-right">Owner Payout</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.properties.map((p: any) => (
+                      <tr key={p.id} className="border-t hover:bg-accent/30">
+                        <td className="px-4 py-2.5">
+                          <p className="font-medium">{p.publicName || "Untitled"}</p>
+                          <p className="text-xs text-muted-foreground">{p.buildingName} {p.unitNumber}</p>
+                        </td>
+                        <td className="px-4 py-2.5 capitalize text-sm">
+                          {p.commissionType === "percentage_per_booking" ? `${p.commissionValue}%` : p.commissionType === "fixed_monthly" ? `AED ${p.commissionValue}/mo` : "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-center">{p.bookingCount}</td>
+                        <td className="px-4 py-2.5 text-right">{fmt(p.totalIncome)}</td>
+                        <td className="px-4 py-2.5 text-right font-medium text-purple-700">{fmt(p.commission)}</td>
+                        <td className="px-4 py-2.5 text-right">{fmt(p.ownerPayout)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* Recent bookings */}
+          {data?.recentBookings?.length > 0 && (
+            <>
+              <h4 className="text-sm font-semibold mt-6 mb-3">Recent Bookings</h4>
+              <div className="border rounded-lg overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 text-left">
+                      <th className="px-4 py-2 font-medium">Property</th>
+                      <th className="px-4 py-2 font-medium">Guest</th>
+                      <th className="px-4 py-2 font-medium">Check-In</th>
+                      <th className="px-4 py-2 font-medium text-right">Total</th>
+                      <th className="px-4 py-2 font-medium text-right">Commission</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.recentBookings.slice(0, 20).map((b: any) => (
+                      <tr key={b.id} className="border-t hover:bg-accent/30">
+                        <td className="px-4 py-2 truncate max-w-[160px]">{b.propertyName || "—"}</td>
+                        <td className="px-4 py-2">{b.guestName || "—"}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{b.checkIn ? new Date(b.checkIn).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                        <td className="px-4 py-2 text-right">{fmt(b.totalAmount)}</td>
+                        <td className="px-4 py-2 text-right font-medium text-purple-700">{fmt(b.commission)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {!data?.properties?.length && !data?.recentBookings?.length && (
+            <div className="text-center py-8 text-muted-foreground">
+              <TrendingUp className="h-10 w-10 mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No earnings data available.</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ─── PM Settlements Tab ──────────────────────────────────────────────────────
+
+function PmSettlementsTab({ pmUserId }: { pmUserId: string }) {
+  const { data, isLoading, isError, error } = useQuery<any>({
+    queryKey: ["/admin/pm-settlements", pmUserId],
+    queryFn: () => api.get(`/st-properties/settlements?pmUserId=${pmUserId}`),
+    enabled: !!pmUserId,
+    retry: 1,
+  });
+
+  if (isLoading) return <div className="flex justify-center py-16"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
+
+  if (isError) {
+    return (
+      <Card>
+        <CardContent className="py-10 text-center text-muted-foreground">
+          <Receipt className="h-8 w-8 mx-auto mb-3 opacity-30" />
+          <p className="font-medium text-destructive">Failed to load settlements</p>
+          <p className="text-sm mt-1">{(error as any)?.message || "Unknown error"}</p>
+          <p className="text-xs mt-2 text-muted-foreground">PM ID: {pmUserId}</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const settlements: any[] = data?.settlements || [];
+  const summary = data?.summary;
+  const fmt = (v: any) => `AED ${parseFloat(v || "0").toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  const fmtDate = (d: string) => d ? new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : "—";
+
+  const statusColor: Record<string, string> = {
+    pending: "bg-yellow-100 text-yellow-800",
+    paid: "bg-green-100 text-green-800",
+    cancelled: "bg-red-100 text-red-800",
+  };
+
+  return (
+    <div className="space-y-6">
+      {summary && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="rounded-lg border p-4 bg-red-50/50">
+            <p className="text-xs text-muted-foreground mb-1">Pending Owed</p>
+            <p className="text-lg font-bold text-red-700">{fmt(summary.pendingOwed)}</p>
+          </div>
+          <div className="rounded-lg border p-4 bg-green-50/50">
+            <p className="text-xs text-muted-foreground mb-1">Pending Receivable</p>
+            <p className="text-lg font-bold text-green-700">{fmt(summary.pendingReceivable)}</p>
+          </div>
+          <div className="rounded-lg border p-4 bg-blue-50/50">
+            <p className="text-xs text-muted-foreground mb-1">Total Paid</p>
+            <p className="text-lg font-bold text-blue-700">{fmt(summary.totalPaid)}</p>
+          </div>
+          <div className="rounded-lg border p-4 bg-emerald-50/50">
+            <p className="text-xs text-muted-foreground mb-1">Total Received</p>
+            <p className="text-lg font-bold text-emerald-700">{fmt(summary.totalReceived)}</p>
+          </div>
+        </div>
+      )}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Banknote className="h-5 w-5" />
+            Settlement Ledger
+          </CardTitle>
+          <CardDescription>All settlement records for this PM</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {settlements.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <Receipt className="h-10 w-10 mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No settlements recorded yet.</p>
+            </div>
+          ) : (
+            <div className="border rounded-lg overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/50 text-left">
+                    <th className="px-4 py-2 font-medium">Date</th>
+                    <th className="px-4 py-2 font-medium">Property</th>
+                    <th className="px-4 py-2 font-medium">Reason</th>
+                    <th className="px-4 py-2 font-medium">From → To</th>
+                    <th className="px-4 py-2 font-medium text-right">Amount</th>
+                    <th className="px-4 py-2 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {settlements.map((s: any) => (
+                    <tr key={s.id} className="border-t hover:bg-accent/30">
+                      <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{fmtDate(s.paidAt || s.createdAt)}</td>
+                      <td className="px-4 py-2.5 truncate max-w-[150px]">{s.propertyName || "—"}</td>
+                      <td className="px-4 py-2.5 truncate max-w-[150px] text-muted-foreground">{s.reason || s.expenseDescription || "—"}</td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">{s.fromName || "—"} → {s.toName || "—"}</td>
+                      <td className="px-4 py-2.5 text-right font-semibold">{fmt(s.amount)}</td>
+                      <td className="px-4 py-2.5">
+                        <span className={cn("text-xs px-2 py-0.5 rounded-full font-medium", statusColor[s.status] || "bg-gray-100 text-gray-700")}>
+                          {s.status || "pending"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

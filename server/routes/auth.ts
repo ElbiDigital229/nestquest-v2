@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db/index";
-import { users, guests, otpVerifications, userAuditLog, signupSchema, loginSchema, PORTAL_ROLES, userDocuments, documentTypes, notifications } from "../../shared/schema";
+import { users, otpVerifications, userAuditLog, signupSchema, loginSchema, PORTAL_ROLES, userDocuments, documentTypes, notifications } from "../../shared/schema";
 import { eq, and, gt, lte, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
@@ -119,8 +119,8 @@ router.post("/send-signup-otp", otpLimiter, async (req: Request, res: Response) 
       mock: true,
       hint: "Use code: 123456",
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -158,8 +158,8 @@ router.post("/verify-signup-otp", otpLimiter, async (req: Request, res: Response
       .where(eq(otpVerifications.id, record.id));
 
     return res.json({ verified: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -203,7 +203,7 @@ router.post("/signup", signupLimiter, async (req: Request, res: Response) => {
     // Hash password
     const passwordHash = await bcrypt.hash(data.password, SALT_ROUNDS);
 
-    // Create user
+    // Create user with profile fields merged in
     const [user] = await db
       .insert(users)
       .values({
@@ -211,31 +211,27 @@ router.post("/signup", signupLimiter, async (req: Request, res: Response) => {
         passwordHash,
         role: data.role,
         phone: data.phone,
+        fullName: data.fullName,
+        dob: data.dob,
+        nationality: data.nationality,
+        countryOfResidence: data.countryOfResidence,
+        residentAddress: data.residentAddress,
+        emiratesIdNumber: data.emiratesIdNumber,
+        emiratesIdExpiry: data.emiratesIdExpiry,
+        emiratesIdFrontUrl: data.emiratesIdFrontUrl,
+        emiratesIdBackUrl: data.emiratesIdBackUrl,
+        passportNumber: data.passportNumber || null,
+        passportExpiry: data.passportExpiry || null,
+        passportFrontUrl: data.passportFrontUrl || null,
+        tradeLicenseExpiry: data.tradeLicenseExpiry || null,
+        tradeLicenseUrl: data.tradeLicenseUrl || null,
+        companyName: data.companyName || null,
+        companyWebsite: data.companyWebsite || null,
+        companyDescription: data.companyDescription || null,
+        companyAddress: data.companyAddress || null,
+        kycStatus: "pending",
       })
       .returning();
-
-    // Create guest profile
-    await db.insert(guests).values({
-      userId: user.id,
-      fullName: data.fullName,
-      dob: data.dob,
-      nationality: data.nationality,
-      countryOfResidence: data.countryOfResidence,
-      residentAddress: data.residentAddress,
-      emiratesIdNumber: data.emiratesIdNumber,
-      emiratesIdExpiry: data.emiratesIdExpiry,
-      emiratesIdFrontUrl: data.emiratesIdFrontUrl,
-      emiratesIdBackUrl: data.emiratesIdBackUrl,
-      passportNumber: data.passportNumber || null,
-      passportExpiry: data.passportExpiry || null,
-      passportFrontUrl: data.passportFrontUrl || null,
-      tradeLicenseExpiry: data.tradeLicenseExpiry || null,
-      tradeLicenseUrl: data.tradeLicenseUrl || null,
-      companyName: data.companyName || null,
-      companyWebsite: data.companyWebsite || null,
-      companyDescription: data.companyDescription || null,
-      companyAddress: data.companyAddress || null,
-    });
 
     // Audit log
     await db.insert(userAuditLog).values({
@@ -331,10 +327,17 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
     // Check team membership for PM_TEAM_MEMBER
     if (user.role === "PM_TEAM_MEMBER") {
       const [membership] = await db.execute(
-        sql`SELECT id, status FROM pm_team_members WHERE user_id = ${user.id} AND status = 'active' LIMIT 1`
+        sql`SELECT id, status, pm_user_id FROM pm_team_members WHERE user_id = ${user.id} AND status = 'active' LIMIT 1`
       ).then(r => r.rows as any[]);
       if (!membership) {
         return res.status(403).json({ error: "Your team access has been revoked. Contact your Property Manager." });
+      }
+      // Also verify the parent PM account is still active
+      const [parentPm] = await db.execute(
+        sql`SELECT status FROM users WHERE id = ${membership.pm_user_id} LIMIT 1`
+      ).then(r => r.rows as any[]);
+      if (parentPm?.status === "suspended") {
+        return res.status(403).json({ error: "Your Property Manager account has been suspended. Access is unavailable." });
       }
     }
 
@@ -369,8 +372,7 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
       const auditResult = await db.execute(sql`SELECT metadata FROM user_audit_log WHERE details LIKE '%' || ${user.email} || '%' AND action = 'SETTINGS_UPDATED' LIMIT 1`);
       if (auditResult.rows[0]) { try { name = JSON.parse((auditResult.rows[0] as any).metadata).fullName || name; } catch {} }
     } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
-      const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
-      if (guest) name = guest.fullName;
+      if (user.fullName) name = user.fullName;
     }
 
     // Fire-and-forget: check for expiring documents
@@ -424,8 +426,8 @@ router.post("/send-login-otp", otpLimiter, async (req: Request, res: Response) =
       mock: true,
       hint: "Use code: 123456",
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -503,8 +505,7 @@ router.post("/verify-login-otp", otpLimiter, async (req: Request, res: Response)
       const auditResult = await db.execute(sql`SELECT metadata FROM user_audit_log WHERE details LIKE '%' || ${user.email} || '%' AND action = 'SETTINGS_UPDATED' LIMIT 1`);
       if (auditResult.rows[0]) { try { name = JSON.parse((auditResult.rows[0] as any).metadata).fullName || name; } catch {} }
     } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
-      const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
-      if (guest) name = guest.fullName;
+      if (user.fullName) name = user.fullName;
     }
 
     // Fire-and-forget: check for expiring documents
@@ -552,8 +553,7 @@ router.get("/me", requireAuth, async (req: Request, res: Response) => {
         teamStatus: tm.team_status,
       } : null;
     } else if ((PORTAL_ROLES as readonly string[]).includes(user.role)) {
-      const [guest] = await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1);
-      profile = guest;
+      profile = user;
       // Fire-and-forget: check for expiring documents (not for team members)
       checkDocumentExpiry(user.id).catch(() => {});
     }
@@ -569,8 +569,8 @@ router.get("/me", requireAuth, async (req: Request, res: Response) => {
       },
       profile,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db/index";
-import { users, guests, userAuditLog } from "../../shared/schema";
+import { users, userAuditLog } from "../../shared/schema";
 import { eq } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth";
 
@@ -15,9 +15,8 @@ router.use(requireAuth, requireRole("GUEST", "PROPERTY_MANAGER", "PROPERTY_OWNER
 router.get("/profile", async (req: Request, res: Response) => {
   try {
     const [user] = await db.select().from(users).where(eq(users.id, req.session.userId!)).limit(1);
-    const [guest] = await db.select().from(guests).where(eq(guests.userId, req.session.userId!)).limit(1);
 
-    if (!user || !guest) {
+    if (!user || !user.fullName) {
       return res.status(404).json({ error: "Profile not found" });
     }
 
@@ -30,10 +29,10 @@ router.get("/profile", async (req: Request, res: Response) => {
         status: user.status,
         createdAt: user.createdAt,
       },
-      profile: guest,
+      profile: user,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -70,14 +69,11 @@ router.patch("/profile", async (req: Request, res: Response) => {
     if (companyDescription) updates.companyDescription = companyDescription;
     if (companyAddress) updates.companyAddress = companyAddress;
 
+    if (phone) updates.phone = phone;
+
     if (Object.keys(updates).length > 0) {
       updates.updatedAt = new Date();
-      await db.update(guests).set(updates).where(eq(guests.userId, req.session.userId!));
-    }
-
-    // Update phone on users table if provided
-    if (phone) {
-      await db.update(users).set({ phone, updatedAt: new Date() }).where(eq(users.id, req.session.userId!));
+      await db.update(users).set(updates).where(eq(users.id, req.session.userId!));
     }
 
     // Audit log
@@ -90,8 +86,8 @@ router.patch("/profile", async (req: Request, res: Response) => {
     });
 
     return res.json({ message: "Profile updated successfully" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -133,8 +129,8 @@ router.post("/change-password", async (req: Request, res: Response) => {
     });
 
     return res.json({ message: "Password changed successfully" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -151,8 +147,8 @@ router.get("/activity", async (req: Request, res: Response) => {
 
     // Reverse to get newest first (orderBy doesn't support desc easily)
     return res.json(logs.reverse());
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

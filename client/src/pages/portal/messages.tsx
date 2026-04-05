@@ -34,7 +34,28 @@ interface DmConversation {
   unreadCount: number;
 }
 
-type ConvoItem = AdminConversation | DmConversation;
+interface GuestConversation {
+  type: "guest";
+  id: string; // guestId (users.id)
+  name: string;
+  email: string;
+  lastMessage: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}
+
+interface PoGuestConversation {
+  type: "po-guest";
+  id: string; // guestId (users.id)
+  name: string;
+  email: string;
+  propertyName: string;
+  lastMessage: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}
+
+type ConvoItem = AdminConversation | DmConversation | GuestConversation | PoGuestConversation;
 
 interface Message {
   id: string;
@@ -103,6 +124,24 @@ export default function GuestMessages() {
     refetchInterval: 5000,
   });
 
+  // PM guest conversations (only for PM / PM_TEAM_MEMBER)
+  const isPm = user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER";
+  const isPo = user?.role === "PROPERTY_OWNER";
+  const { data: guestConvos = [] } = useQuery<any[]>({
+    queryKey: ["/chat/guest-conversations"],
+    queryFn: () => api.get("/chat/guest-conversations"),
+    enabled: isPm,
+    refetchInterval: 5000,
+  });
+
+  // PO guest conversations (only for PROPERTY_OWNER)
+  const { data: poGuestConvos = [] } = useQuery<any[]>({
+    queryKey: ["/chat/po-guest-conversations"],
+    queryFn: () => api.get("/chat/po-guest-conversations"),
+    enabled: isPo,
+    refetchInterval: 5000,
+  });
+
   // Merge conversations
   const allConversations: ConvoItem[] = [
     ...adminConvos.map((c: any): AdminConversation => ({
@@ -120,6 +159,25 @@ export default function GuestMessages() {
       name: c.otherName || "User",
       email: c.otherEmail || "",
       role: c.otherRole || "",
+      lastMessage: c.lastMessage,
+      lastMessageAt: c.lastMessageAt,
+      unreadCount: c.unreadCount || 0,
+    })),
+    ...guestConvos.map((c: any): GuestConversation => ({
+      type: "guest",
+      id: c.guestId,
+      name: c.guestName || "Guest",
+      email: c.guestEmail || "",
+      lastMessage: c.lastMessage,
+      lastMessageAt: c.lastMessageAt,
+      unreadCount: c.unreadCount || 0,
+    })),
+    ...poGuestConvos.map((c: any): PoGuestConversation => ({
+      type: "po-guest",
+      id: c.guestId,
+      name: c.guestName || "Guest",
+      email: c.guestEmail || "",
+      propertyName: c.propertyName || "",
       lastMessage: c.lastMessage,
       lastMessageAt: c.lastMessageAt,
       unreadCount: c.unreadCount || 0,
@@ -186,12 +244,18 @@ export default function GuestMessages() {
   }, [allConversations]);
 
   const isDm = selectedConvo?.type === "dm";
+  const isGuest = selectedConvo?.type === "guest" || selectedConvo?.type === "po-guest";
   const convoId = selectedConvo?.id;
+
+  const msgQueryKey = isDm ? "/chat/dm/messages" : "/chat/messages";
+  const msgEndpoint = isDm
+    ? `/chat/dm/${convoId}/messages`
+    : `/chat/${convoId}/messages`;
 
   // Messages — poll every 3s
   const { data: msgs = [], isLoading } = useQuery<Message[]>({
-    queryKey: [isDm ? "/chat/dm/messages" : "/chat/messages", convoId],
-    queryFn: () => isDm ? api.get(`/chat/dm/${convoId}/messages`) : api.get(`/chat/${convoId}/messages`),
+    queryKey: [msgQueryKey, convoId],
+    queryFn: () => api.get(msgEndpoint),
     enabled: !!convoId,
     refetchInterval: 3000,
   });
@@ -210,15 +274,14 @@ export default function GuestMessages() {
 
   // Send message
   const sendMsg = useMutation({
-    mutationFn: () => {
-      const endpoint = isDm ? `/chat/dm/${convoId}/messages` : `/chat/${convoId}/messages`;
-      return api.post(endpoint, { content: input.trim() });
-    },
+    mutationFn: () => api.post(msgEndpoint, { content: input.trim() }),
     onSuccess: () => {
       setInput("");
-      queryClient.invalidateQueries({ queryKey: [isDm ? "/chat/dm/messages" : "/chat/messages", convoId] });
+      queryClient.invalidateQueries({ queryKey: [msgQueryKey, convoId] });
       queryClient.invalidateQueries({ queryKey: ["/chat/conversations"] });
       queryClient.invalidateQueries({ queryKey: ["/chat/dm/conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/chat/guest-conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["/chat/po-guest-conversations"] });
     },
   });
 
@@ -257,7 +320,10 @@ export default function GuestMessages() {
                   <Avatar className="h-9 w-9 shrink-0 mt-0.5">
                     <AvatarFallback className={cn(
                       "text-xs font-semibold",
-                      isAdmin ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"
+                      isAdmin ? "bg-destructive/10 text-destructive"
+                        : conv.type === "guest" ? "bg-green-100 text-green-700"
+                        : conv.type === "po-guest" ? "bg-orange-100 text-orange-700"
+                        : "bg-primary/10 text-primary"
                     )}>
                       {isAdmin ? "SA" : getInitials(conv.name)}
                     </AvatarFallback>
@@ -272,10 +338,11 @@ export default function GuestMessages() {
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground truncate mt-0.5">
-                      {!isAdmin && conv.type === "dm" && (conv as DmConversation).role
-                        ? (ROLE_LABELS as any)[(conv as DmConversation).role] || (conv as DmConversation).role
+                      {conv.type === "guest" ? "Guest · " : ""}
+                      {conv.type === "po-guest" ? `${(conv as PoGuestConversation).propertyName} · ` : ""}
+                      {conv.type === "dm" && (conv as DmConversation).role
+                        ? ((ROLE_LABELS as any)[(conv as DmConversation).role] || (conv as DmConversation).role) + (conv.lastMessage ? " · " : "")
                         : ""}
-                      {!isAdmin && conv.lastMessage ? " · " : ""}
                       {conv.lastMessage || (isAdmin ? "No messages yet" : "Start a conversation")}
                     </p>
                   </div>
@@ -305,9 +372,11 @@ export default function GuestMessages() {
               <Avatar className="h-8 w-8">
                 <AvatarFallback className={cn(
                   "text-xs font-semibold",
-                  isDm ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive"
+                  isDm ? "bg-primary/10 text-primary"
+                    : isGuest ? "bg-green-100 text-green-700"
+                    : "bg-destructive/10 text-destructive"
                 )}>
-                  {isDm ? getInitials(selectedConvo.name) : "SA"}
+                  {selectedConvo.type === "admin" ? "SA" : getInitials(selectedConvo.name)}
                 </AvatarFallback>
               </Avatar>
               <div>
@@ -315,6 +384,8 @@ export default function GuestMessages() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {isDm
                     ? (ROLE_LABELS as any)[(selectedConvo as DmConversation).role] || "Linked User"
+                    : isGuest
+                    ? "Guest"
                     : "Typically replies within a few hours"}
                 </p>
               </div>

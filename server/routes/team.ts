@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db/index";
-import { users, guests, pmRoles, pmTeamMembers, userAuditLog } from "../../shared/schema";
+import { users, pmRoles, pmTeamMembers, userAuditLog } from "../../shared/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { requirePmPermission, getPmUserId } from "../middleware/pm-permissions";
@@ -111,11 +111,10 @@ router.get("/members", requirePmPermission("team.manage"), async (req: Request, 
       SELECT tm.id, tm.user_id AS "userId", tm.role_id AS "roleId", tm.status,
         tm.invited_at AS "invitedAt", tm.accepted_at AS "acceptedAt",
         u.email, u.phone, u.status AS "userStatus",
-        g.full_name AS "fullName",
+        tm.full_name AS "fullName",
         r.name AS "roleName", r.permissions AS "rolePermissions"
       FROM pm_team_members tm
       JOIN users u ON u.id = tm.user_id
-      LEFT JOIN guests g ON g.user_id = tm.user_id
       LEFT JOIN pm_roles r ON r.id = tm.role_id
       WHERE tm.pm_user_id = ${pmId}
       ORDER BY tm.created_at DESC
@@ -219,12 +218,10 @@ router.get("/members/:id", requirePmPermission("team.manage"), async (req: Reque
       SELECT tm.id, tm.user_id AS "userId", tm.role_id AS "roleId", tm.status,
         tm.invited_at AS "invitedAt", tm.accepted_at AS "acceptedAt",
         u.email, u.phone, u.status AS "userStatus", u.created_at AS "userCreatedAt",
-        g.full_name AS "fullName", g.dob, g.nationality, g.country_of_residence AS "countryOfResidence",
-        g.resident_address AS "residentAddress", g.emirates_id_number AS "emiratesIdNumber",
+        tm.full_name AS "fullName", u.full_name AS "userFullName",
         r.name AS "roleName", r.permissions AS "rolePermissions"
       FROM pm_team_members tm
       JOIN users u ON u.id = tm.user_id
-      LEFT JOIN guests g ON g.user_id = tm.user_id
       LEFT JOIN pm_roles r ON r.id = tm.role_id
       WHERE tm.id = ${id} AND tm.pm_user_id = ${pmId}
     `);
@@ -346,12 +343,11 @@ router.get("/my-profile", requireAuth, async (req: Request, res: Response) => {
         tm.invited_at AS "invitedAt", tm.accepted_at AS "acceptedAt",
         u.email, u.phone,
         r.name AS "roleName", r.permissions,
-        pm_g.full_name AS "pmName", pm_u.email AS "pmEmail"
+        pm_u.full_name AS "pmName", pm_u.email AS "pmEmail"
       FROM pm_team_members tm
       JOIN users u ON u.id = tm.user_id
       LEFT JOIN pm_roles r ON r.id = tm.role_id
       JOIN users pm_u ON pm_u.id = tm.pm_user_id
-      LEFT JOIN guests pm_g ON pm_g.user_id = tm.pm_user_id
       WHERE tm.user_id = ${userId} AND tm.status = 'active'
       LIMIT 1
     `);

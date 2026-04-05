@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { BookingStatusBadge } from "@/components/status-badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -101,6 +102,17 @@ interface BookingDetail {
   declineReason: string | null;
   expiresAt: string | null;
   createdAt: string;
+  pricingBreakdown: { date: string; price: number; type: string }[];
+  securityDeposit: {
+    amount: string;
+    status: string;
+    returnedAmount: string | null;
+    returnedAt: string | null;
+    deductions: { reason: string; amount: string }[];
+    notes: string | null;
+  } | null;
+  ownerPayoutStatus: string | null;
+  settlementStatus: string | null;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -115,27 +127,6 @@ type BookingStatus =
   | "declined"
   | "expired";
 
-const STATUS_STYLES: Record<BookingStatus, string> = {
-  requested: "bg-yellow-100 text-yellow-800",
-  confirmed: "bg-blue-100 text-blue-800",
-  checked_in: "bg-green-100 text-green-800",
-  checked_out: "bg-orange-100 text-orange-800",
-  completed: "bg-emerald-100 text-emerald-800",
-  cancelled: "bg-red-100 text-red-800",
-  declined: "bg-gray-100 text-gray-800",
-  expired: "bg-gray-100 text-gray-500",
-};
-
-const STATUS_LABELS: Record<BookingStatus, string> = {
-  requested: "Requested",
-  confirmed: "Confirmed",
-  checked_in: "Checked In",
-  checked_out: "Checked Out",
-  completed: "Completed",
-  cancelled: "Cancelled",
-  declined: "Declined",
-  expired: "Expired",
-};
 
 function formatDateRange(checkIn: string, checkOut: string): string {
   const start = new Date(checkIn);
@@ -180,22 +171,6 @@ function filterBookings(bookings: BookingSummary[], tab: FilterTab): BookingSumm
   }
 }
 
-// ── Status Badge ───────────────────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: string }) {
-  const s = status as BookingStatus;
-  return (
-    <Badge
-      className={cn(
-        "border-0 font-medium",
-        STATUS_STYLES[s] ?? "bg-gray-100 text-gray-800"
-      )}
-    >
-      {STATUS_LABELS[s] ?? status}
-    </Badge>
-  );
-}
-
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export default function MyBookings({ propertyId, embedded }: { propertyId?: string; embedded?: boolean } = {}) {
@@ -206,7 +181,9 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
   const queryClient = useQueryClient();
 
   const [tab, setTab] = useState<FilterTab>("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    try { return new URLSearchParams(window.location.search).get("id"); } catch { return null; }
+  });
   const [cancelTarget, setCancelTarget] = useState<BookingSummary | null>(null);
   const [depositTarget, setDepositTarget] = useState<BookingSummary | null>(null);
   const [depositReturnAmount, setDepositReturnAmount] = useState("");
@@ -414,7 +391,7 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
 
                   {/* Right side */}
                   <div className="flex flex-col items-end justify-between shrink-0">
-                    <StatusBadge status={booking.status} />
+                    <BookingStatusBadge status={booking.status} />
                     <p className="font-semibold text-lg mt-2">
                       {formatCurrency(booking.totalAmount)}
                     </p>
@@ -615,7 +592,7 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                   {detail.propertyType && ` \u00B7 ${detail.propertyType}`}
                 </p>
                 <div className="mt-2">
-                  <StatusBadge status={detail.status} />
+                  <BookingStatusBadge status={detail.status} />
                 </div>
               </div>
 
@@ -753,23 +730,44 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
               <div>
                 <h4 className="font-semibold mb-2">Price Breakdown</h4>
                 <div className="space-y-1.5 text-sm">
-                  {detail.weekdayNights > 0 && (
-                    <div className="flex justify-between">
-                      <span>
-                        {formatCurrency(detail.nightlyRate)} x {detail.weekdayNights} weekday night
-                        {detail.weekdayNights !== 1 ? "s" : ""}
-                      </span>
-                      <span>{formatCurrency(detail.nightlyRate * detail.weekdayNights)}</span>
-                    </div>
-                  )}
-                  {detail.weekendNights > 0 && (
-                    <div className="flex justify-between">
-                      <span>
-                        {formatCurrency(detail.weekendRate)} x {detail.weekendNights} weekend night
-                        {detail.weekendNights !== 1 ? "s" : ""}
-                      </span>
-                      <span>{formatCurrency(detail.weekendRate * detail.weekendNights)}</span>
-                    </div>
+                  {detail.pricingBreakdown?.length > 0 ? (
+                    (() => {
+                      // Group consecutive nights with same price+type into line items
+                      const groups: { label: string; count: number; price: number; total: number }[] = [];
+                      for (const night of detail.pricingBreakdown) {
+                        const label = night.type === "custom"
+                          ? `Custom (${new Date(night.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })})`
+                          : night.type === "weekend" ? "Weekend night" : "Weekday night";
+                        const last = groups[groups.length - 1];
+                        if (last && last.price === night.price && last.label === (night.type === "weekend" ? "Weekend night" : night.type === "weekday" ? "Weekday night" : label)) {
+                          last.count++;
+                          last.total += night.price;
+                        } else {
+                          groups.push({ label: night.type === "custom" ? `${formatCurrency(night.price)} (${new Date(night.date + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })})` : night.type === "weekend" ? "Weekend night" : "Weekday night", count: 1, price: night.price, total: night.price });
+                        }
+                      }
+                      return groups.map((g, i) => (
+                        <div key={i} className="flex justify-between">
+                          <span className="text-muted-foreground">{formatCurrency(g.price)} × {g.count} {g.count === 1 ? g.label.replace(" night", " night") : g.label + (g.label.endsWith("night") ? "s" : "")}</span>
+                          <span>{formatCurrency(g.total)}</span>
+                        </div>
+                      ));
+                    })()
+                  ) : (
+                    <>
+                      {detail.weekdayNights > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">{formatCurrency(detail.nightlyRate)} × {detail.weekdayNights} weekday night{detail.weekdayNights !== 1 ? "s" : ""}</span>
+                          <span>{formatCurrency(detail.nightlyRate * detail.weekdayNights)}</span>
+                        </div>
+                      )}
+                      {detail.weekendNights > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">{formatCurrency(detail.weekendRate)} × {detail.weekendNights} weekend night{detail.weekendNights !== 1 ? "s" : ""}</span>
+                          <span>{formatCurrency(detail.weekendRate * detail.weekendNights)}</span>
+                        </div>
+                      )}
+                    </>
                   )}
                   <div className="flex justify-between">
                     <span>Subtotal</span>
@@ -818,6 +816,69 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                 </div>
                 <p>Status: {detail.paymentStatus ?? "N/A"}</p>
               </div>
+
+              {/* Security deposit status — visible to guests */}
+              {!isPmOrTeam && detail.securityDepositAmount > 0 && (
+                <>
+                  <Separator />
+                  <div className="text-sm space-y-2">
+                    <h4 className="font-semibold flex items-center gap-1">
+                      <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                      Security Deposit
+                    </h4>
+                    {(() => {
+                      const dep = detail.securityDeposit;
+                      const status = dep?.status || "held";
+                      const statusConfig: Record<string, { label: string; color: string }> = {
+                        held:              { label: "Held",             color: "text-amber-600" },
+                        pending:           { label: "Held",             color: "text-amber-600" },
+                        returned:          { label: "Fully Returned",   color: "text-green-600" },
+                        partially_returned:{ label: "Partially Returned", color: "text-blue-600" },
+                        forfeited:         { label: "Forfeited",        color: "text-red-600" },
+                      };
+                      const cfg = statusConfig[status] || statusConfig.held;
+                      return (
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Amount</span>
+                            <span className="font-medium">{formatCurrency(Number(dep?.amount ?? detail.securityDepositAmount))}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Status</span>
+                            <span className={`font-medium ${cfg.color}`}>{cfg.label}</span>
+                          </div>
+                          {dep?.returnedAmount && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Returned</span>
+                              <span className="font-medium text-green-600">{formatCurrency(Number(dep.returnedAmount))}</span>
+                            </div>
+                          )}
+                          {dep?.returnedAt && (
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Return date</span>
+                              <span>{new Date(dep.returnedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
+                            </div>
+                          )}
+                          {dep?.deductions && dep.deductions.length > 0 && (
+                            <div className="mt-2 space-y-1 bg-red-50 rounded p-2">
+                              <p className="text-xs font-semibold text-red-700">Deductions</p>
+                              {dep.deductions.map((d: any, i: number) => (
+                                <div key={i} className="flex justify-between text-xs text-red-700">
+                                  <span>{d.reason}</span>
+                                  <span>-{formatCurrency(Number(d.amount))}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {dep?.notes && (
+                            <p className="text-xs text-muted-foreground mt-1">{dep.notes}</p>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
 
               {/* Cancellation policy */}
               {detail.cancellationPolicy && (

@@ -463,7 +463,7 @@ function PricingCalendar({ property }: { property: StProperty }) {
             const day = i + 1;
             const dateStr = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
             const dayOfWeek = new Date(currentMonth.year, currentMonth.month, day).getDay();
-            const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
+            const isWeekend = dayOfWeek === 0 || dayOfWeek === 6; // Sat (6), Sun (0)
             const booking = bookingMap.get(dateStr);
             const isBlocked = blockedSet.has(dateStr);
             const customPrice = pricingMap.get(dateStr);

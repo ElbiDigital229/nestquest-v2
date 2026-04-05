@@ -29,6 +29,9 @@ import {
   XCircle,
   DollarSign,
   Contact,
+  TrendingUp,
+  Mail,
+  KeyRound,
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
@@ -83,9 +86,12 @@ const stNavItems: NavItem[] = [
   { label: "ST Properties", href: "/portal/st-properties", icon: Home },
   { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
   { label: "Pricing", href: "/portal/st-pricing", icon: DollarSign },
+  { label: "Analytics", href: "/portal/st-analytics", icon: TrendingUp },
+  { label: "Guests", href: "/portal/st-guests", icon: Contact },
   { label: "Reviews", href: "/portal/st-reviews", icon: Star },
   { label: "Cancellations", href: "/portal/st-cancellations", icon: XCircle },
-  { label: "Guests", href: "/portal/st-guests", icon: Contact },
+  { label: "Msg Templates", href: "/portal/st-message-templates", icon: Mail },
+  { label: "Smart Locks", href: "/portal/st-smart-locks", icon: KeyRound },
 ];
 
 // Cleaner ops sub-nav

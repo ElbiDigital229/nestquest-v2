@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { users, guests, userAuditLog, pmPoLinks, messages, subscriptions, plans, invoices, documentTypes, userDocuments, stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas } from "../../shared/schema";
+import { users, userAuditLog, pmPoLinks, messages, subscriptions, plans, invoices, documentTypes, userDocuments, stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas } from "../../shared/schema";
+import { pool } from "../db/index";
 import { eq, and, like, or, sql, gte, lte, asc, desc, ne } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
@@ -10,6 +11,13 @@ const router = Router();
 
 // All routes require SUPER_ADMIN
 router.use(requireAuth, requireRole("SUPER_ADMIN"));
+
+// ── Helper: resolve { userId, guestId } from users.id ──
+// After merging guests into users, guestId === userId always
+async function resolveUser(id: string): Promise<{ userId: string; guestId: string } | null> {
+  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+  return user ? { userId: user.id, guestId: user.id } : null;
+}
 
 // ── List Guests ────────────────────────────────────────
 
@@ -37,71 +45,84 @@ router.get("/users", async (req: Request, res: Response) => {
       const term = `%${search}%`;
       conditions.push(
         or(
-          like(guests.fullName, term),
+          like(users.fullName, term),
           like(users.email, term),
           like(users.phone, term)
         )
       );
     }
-    if (kycStatus) conditions.push(eq(guests.kycStatus, kycStatus as string));
+    if (kycStatus) conditions.push(eq(users.kycStatus, kycStatus as string));
     if (userStatus) conditions.push(eq(users.status, userStatus as string));
-    if (nationality) conditions.push(like(guests.nationality, `%${nationality}%`));
+    if (nationality) conditions.push(like(users.nationality, `%${nationality}%`));
     if (role) conditions.push(eq(users.role, role as string));
-    if (dateFrom) conditions.push(gte(guests.createdAt, new Date(dateFrom as string)));
+    if (dateFrom) conditions.push(gte(users.createdAt, new Date(dateFrom as string)));
     if (dateTo) {
       const end = new Date(dateTo as string);
       end.setHours(23, 59, 59, 999);
-      conditions.push(lte(guests.createdAt, end));
+      conditions.push(lte(users.createdAt, end));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     // Build ORDER BY
     const orderMap: Record<string, any> = {
-      fullName: guests.fullName,
+      fullName: users.fullName,
       email: users.email,
-      nationality: guests.nationality,
-      kycStatus: guests.kycStatus,
+      nationality: users.nationality,
+      kycStatus: users.kycStatus,
       userStatus: users.status,
-      createdAt: guests.createdAt,
+      createdAt: users.createdAt,
     };
-    const orderCol = orderMap[sortBy as string] ?? guests.createdAt;
+    const orderCol = orderMap[sortBy as string] ?? users.createdAt;
     const orderFn = sortOrder === "asc" ? asc : desc;
 
-    const results = await db
-      .select({
-        id: guests.id,
-        userId: guests.userId,
-        fullName: guests.fullName,
-        email: users.email,
-        phone: users.phone,
-        nationality: guests.nationality,
-        countryOfResidence: guests.countryOfResidence,
-        dob: guests.dob,
-        emiratesIdNumber: guests.emiratesIdNumber,
-        kycStatus: guests.kycStatus,
-        userStatus: users.status,
-        role: users.role,
-        createdAt: guests.createdAt,
-      })
-      .from(guests)
-      .innerJoin(users, eq(guests.userId, users.id))
-      .where(where)
-      .orderBy(orderFn(orderCol))
-      .limit(parseInt(limit as string))
-      .offset(offset);
+    // Build parameterized query
+    const params: any[] = [];
+    let pi = 1;
+    let whereParts = [`u.role != 'SUPER_ADMIN'`];
 
-    const [countResult] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(guests)
-      .innerJoin(users, eq(guests.userId, users.id))
-      .where(where);
+    if (role) { whereParts.push(`u.role = $${pi++}`); params.push(role); }
+    if (search) {
+      whereParts.push(`(COALESCE(u.full_name,'') ILIKE $${pi} OR u.email ILIKE $${pi})`);
+      params.push(`%${search}%`); pi++;
+    }
+    if (kycStatus) { whereParts.push(`u.kyc_status::text = $${pi++}`); params.push(kycStatus); }
+    if (userStatus) { whereParts.push(`u.status = $${pi++}`); params.push(userStatus); }
+
+    const whereStr = whereParts.join(" AND ");
+    const limitVal = parseInt(limit as string);
+
+    const dataParams = [...params, limitVal, offset];
+    const listResult = await pool.query(`
+      SELECT
+        u.id AS "id",
+        u.id AS "userId",
+        COALESCE(u.full_name, u.email) AS "fullName",
+        u.email, u.phone,
+        u.nationality,
+        u.country_of_residence AS "countryOfResidence",
+        u.dob,
+        u.emirates_id_number AS "emiratesIdNumber",
+        COALESCE(u.kyc_status::text, 'pending') AS "kycStatus",
+        u.status AS "userStatus",
+        u.role,
+        u.created_at AS "createdAt"
+      FROM users u
+      WHERE ${whereStr}
+      ORDER BY u.created_at DESC
+      LIMIT $${pi} OFFSET $${pi + 1}
+    `, dataParams);
+
+    const countResult = await pool.query(`
+      SELECT COUNT(*)::int AS count FROM users u
+      WHERE ${whereStr}
+    `, params);
 
     return res.json({
-      guests: results,
-      total: countResult.count,
+      guests: listResult.rows,
+      total: countResult.rows[0]?.count ?? 0,
       page: parseInt(page as string),
-      limit: parseInt(limit as string),
+      limit: limitVal,
     });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -114,21 +135,9 @@ router.get("/users/:id", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // Accept either users.id or guests.id for backward compat
-    let [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
-    let [guest] = user
-      ? await db.select().from(guests).where(eq(guests.userId, user.id)).limit(1)
-      : [];
+    const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
 
-    // Fallback: try guests.id if not found by users.id
     if (!user) {
-      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
-      if (guest) {
-        [user] = await db.select().from(users).where(eq(users.id, guest.userId)).limit(1);
-      }
-    }
-
-    if (!user || !guest) {
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -141,7 +150,7 @@ router.get("/users/:id", async (req: Request, res: Response) => {
         status: user.status,
         createdAt: user.createdAt,
       },
-      profile: guest,
+      profile: user,
     });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -155,12 +164,8 @@ router.patch("/users/:id/profile", async (req: Request, res: Response) => {
     const { id } = req.params;
     const { fullName, dob, nationality, countryOfResidence, residentAddress, emiratesIdNumber, emiratesIdExpiry, phone, emiratesIdFrontUrl, emiratesIdBackUrl } = req.body;
 
-    // Find by users.id first, fallback to guests.id
-    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
-    if (!guest) {
-      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
-    }
-    if (!guest) {
+    const [existingUser] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+    if (!existingUser) {
       return res.status(404).json({ error: "User profile not found" });
     }
 
@@ -178,34 +183,30 @@ router.patch("/users/:id/profile", async (req: Request, res: Response) => {
       if (typeof safeBody[k] === "string") safeBody[k] = sanitize(safeBody[k]);
     }
 
-    // Update guest profile fields
-    const guestUpdates: Record<string, any> = {};
-    if (safeBody.fullName !== undefined && safeBody.fullName !== "") guestUpdates.fullName = safeBody.fullName;
-    if (dob !== undefined && dob !== "") guestUpdates.dob = dob;
-    if (safeBody.nationality !== undefined && safeBody.nationality !== "") guestUpdates.nationality = safeBody.nationality;
-    if (safeBody.countryOfResidence !== undefined && safeBody.countryOfResidence !== "") guestUpdates.countryOfResidence = safeBody.countryOfResidence;
-    if (safeBody.residentAddress !== undefined && safeBody.residentAddress !== "") guestUpdates.residentAddress = safeBody.residentAddress;
-    if (safeBody.emiratesIdNumber !== undefined && safeBody.emiratesIdNumber !== "") guestUpdates.emiratesIdNumber = safeBody.emiratesIdNumber;
-    if (emiratesIdExpiry !== undefined && emiratesIdExpiry !== "") guestUpdates.emiratesIdExpiry = emiratesIdExpiry;
-    if (emiratesIdFrontUrl) guestUpdates.emiratesIdFrontUrl = emiratesIdFrontUrl;
-    if (emiratesIdBackUrl) guestUpdates.emiratesIdBackUrl = emiratesIdBackUrl;
+    // Update profile and phone fields on users table
+    const profileUpdates: Record<string, any> = {};
+    if (safeBody.fullName !== undefined && safeBody.fullName !== "") profileUpdates.fullName = safeBody.fullName;
+    if (dob !== undefined && dob !== "") profileUpdates.dob = dob;
+    if (safeBody.nationality !== undefined && safeBody.nationality !== "") profileUpdates.nationality = safeBody.nationality;
+    if (safeBody.countryOfResidence !== undefined && safeBody.countryOfResidence !== "") profileUpdates.countryOfResidence = safeBody.countryOfResidence;
+    if (safeBody.residentAddress !== undefined && safeBody.residentAddress !== "") profileUpdates.residentAddress = safeBody.residentAddress;
+    if (safeBody.emiratesIdNumber !== undefined && safeBody.emiratesIdNumber !== "") profileUpdates.emiratesIdNumber = safeBody.emiratesIdNumber;
+    if (emiratesIdExpiry !== undefined && emiratesIdExpiry !== "") profileUpdates.emiratesIdExpiry = emiratesIdExpiry;
+    if (emiratesIdFrontUrl) profileUpdates.emiratesIdFrontUrl = emiratesIdFrontUrl;
+    if (emiratesIdBackUrl) profileUpdates.emiratesIdBackUrl = emiratesIdBackUrl;
+    if (safeBody.phone) profileUpdates.phone = safeBody.phone;
 
-    if (Object.keys(guestUpdates).length > 0) {
-      guestUpdates.updatedAt = new Date();
-      await db.update(guests).set(guestUpdates).where(eq(guests.id, id));
-    }
-
-    // Update phone on users table if provided
-    if (safeBody.phone) {
-      await db.update(users).set({ phone: safeBody.phone, updatedAt: new Date() }).where(eq(users.id, guest.userId));
+    if (Object.keys(profileUpdates).length > 0) {
+      profileUpdates.updatedAt = new Date();
+      await db.update(users).set(profileUpdates).where(eq(users.id, id));
     }
 
     // Audit log
     await db.insert(userAuditLog).values({
-      userId: guest.userId,
+      userId: id,
       action: "PROFILE_UPDATED",
       details: `Profile updated by admin`,
-      metadata: JSON.stringify({ fields: [...Object.keys(guestUpdates), ...(phone ? ["phone"] : [])], changedBy: req.session.userId }),
+      metadata: JSON.stringify({ fields: Object.keys(profileUpdates), changedBy: req.session.userId }),
       ipAddress: req.ip,
     });
 
@@ -219,22 +220,17 @@ router.patch("/users/:id/profile", async (req: Request, res: Response) => {
 
 router.get("/users/:id/activity", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-
-    // Get the guest to find userId
-    const [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
-    if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
-    }
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
 
     const logs = await db
       .select()
       .from(userAuditLog)
-      .where(eq(userAuditLog.userId, guest.userId))
-      .orderBy(userAuditLog.createdAt)
+      .where(eq(userAuditLog.userId, resolved.userId))
+      .orderBy(desc(userAuditLog.createdAt))
       .limit(100);
 
-    return res.json(logs.reverse());
+    return res.json(logs);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -251,19 +247,15 @@ router.patch("/users/:id/status", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid status" });
     }
 
-    // Find by users.id first, fallback to guests.id
-    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
-    if (!guest) {
-      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
-    }
-    if (!guest) {
+    const [targetUser] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+    if (!targetUser) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, guest.userId));
+    await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, id));
 
     await db.insert(userAuditLog).values({
-      userId: guest.userId,
+      userId: id,
       action: "STATUS_CHANGED",
       details: `Status changed to ${status} by admin`,
       metadata: JSON.stringify({ newStatus: status, changedBy: req.session.userId }),
@@ -287,21 +279,17 @@ router.patch("/users/:id/kyc", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Invalid KYC status" });
     }
 
-    // Find by users.id first, fallback to guests.id
-    let [guest] = await db.select().from(guests).where(eq(guests.userId, id)).limit(1);
-    if (!guest) {
-      [guest] = await db.select().from(guests).where(eq(guests.id, id)).limit(1);
-    }
-    if (!guest) {
+    const [kycUser] = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1);
+    if (!kycUser) {
       return res.status(404).json({ error: "User profile not found" });
     }
 
-    await db.update(guests).set({ kycStatus, updatedAt: new Date() }).where(eq(guests.id, guest.id));
+    await db.update(users).set({ kycStatus, updatedAt: new Date() }).where(eq(users.id, id));
 
     const actionMap = { verified: "KYC_VERIFIED" as const, rejected: "KYC_REJECTED" as const, pending: "KYC_SUBMITTED" as const };
 
     await db.insert(userAuditLog).values({
-      userId: guest.userId,
+      userId: id,
       action: actionMap[kycStatus as keyof typeof actionMap],
       details: `KYC status changed to ${kycStatus} by admin`,
       metadata: JSON.stringify({ newKycStatus: kycStatus, changedBy: req.session.userId }),
@@ -319,10 +307,10 @@ router.patch("/users/:id/kyc", async (req: Request, res: Response) => {
 router.get("/nationalities", async (_req: Request, res: Response) => {
   try {
     const rows = await db
-      .selectDistinct({ nationality: guests.nationality })
-      .from(guests)
-      .where(sql`${guests.nationality} is not null and ${guests.nationality} != ''`)
-      .orderBy(asc(guests.nationality));
+      .selectDistinct({ nationality: users.nationality })
+      .from(users)
+      .where(sql`${users.nationality} is not null and ${users.nationality} != ''`)
+      .orderBy(asc(users.nationality));
     return res.json(rows.map((r) => r.nationality));
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -335,7 +323,8 @@ router.get("/dashboard", async (req: Request, res: Response) => {
   try {
     const [guestCount] = await db
       .select({ count: sql<number>`count(*)::int` })
-      .from(guests);
+      .from(users)
+      .where(and(ne(users.role, "SUPER_ADMIN"), sql`${users.fullName} IS NOT NULL`));
 
     const [activeCount] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -349,8 +338,8 @@ router.get("/dashboard", async (req: Request, res: Response) => {
 
     const [kycPending] = await db
       .select({ count: sql<number>`count(*)::int` })
-      .from(guests)
-      .where(eq(guests.kycStatus, "pending"));
+      .from(users)
+      .where(eq(users.kycStatus, "pending"));
 
     return res.json({
       totalGuests: guestCount.count,
@@ -367,16 +356,9 @@ router.get("/dashboard", async (req: Request, res: Response) => {
 
 router.get("/users/:id/conversations", async (req: Request, res: Response) => {
   try {
-    const guestId = req.params.id;
-
-    // Find the userId for this guestId
-    const [guest] = await db
-      .select({ userId: guests.userId })
-      .from(guests)
-      .where(eq(guests.id, guestId))
-      .limit(1);
-    if (!guest) return res.status(404).json({ error: "Guest not found" });
-    const targetUserId = guest.userId;
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
+    const { userId: targetUserId, guestId } = resolved;
 
     const conversations: any[] = [];
 
@@ -408,14 +390,13 @@ router.get("/users/:id/conversations", async (req: Request, res: Response) => {
         l.id AS "linkId",
         CASE WHEN l.pm_user_id = ${targetUserId} THEN l.target_user_id ELSE l.pm_user_id END AS "otherUserId",
         CASE WHEN l.pm_user_id = ${targetUserId} THEN l.target_role ELSE 'PROPERTY_MANAGER' END AS "otherRole",
-        g.full_name AS "otherName",
+        u.full_name AS "otherName",
         u.email AS "otherEmail",
         (SELECT content FROM messages WHERE conversation_id = l.id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
         (SELECT created_at FROM messages WHERE conversation_id = l.id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
         (SELECT COUNT(*)::int FROM messages WHERE conversation_id = l.id) AS "messageCount"
       FROM pm_po_links l
       JOIN users u ON u.id = CASE WHEN l.pm_user_id = ${targetUserId} THEN l.target_user_id ELSE l.pm_user_id END
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE (l.pm_user_id = ${targetUserId} OR l.target_user_id = ${targetUserId})
       AND l.status = 'accepted'
       ORDER BY "lastMessageAt" DESC NULLS LAST
@@ -478,7 +459,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
     }
     if (search) {
       const term = `%${search}%`;
-      whereClauses.push(sql`(g.full_name ILIKE ${term} OR u.email ILIKE ${term})`);
+      whereClauses.push(sql`(u.full_name ILIKE ${term} OR u.email ILIKE ${term})`);
     }
 
     const whereSQL = whereClauses.length > 0
@@ -489,8 +470,8 @@ router.get("/compliance", async (req: Request, res: Response) => {
     const rows = await db.execute(sql`
       SELECT
         u.id AS "userId",
-        g.id AS "guestId",
-        g.full_name AS "fullName",
+        u.id AS "guestId",
+        u.full_name AS "fullName",
         u.email,
         u.role,
         json_build_array(
@@ -498,34 +479,36 @@ router.get("/compliance", async (req: Request, res: Response) => {
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'emirates_id' LIMIT 1),
             'slug', 'emirates_id',
             'label', 'Emirates ID',
-            'fileUrl', CASE WHEN g.emirates_id_front_url IS NOT NULL OR g.emirates_id_back_url IS NOT NULL THEN COALESCE(g.emirates_id_front_url, g.emirates_id_back_url) ELSE NULL END,
-            'documentNumber', g.emirates_id_number,
-            'expiryDate', g.emirates_id_expiry,
+            'frontUrl', u.emirates_id_front_url,
+            'backUrl', u.emirates_id_back_url,
+            'documentNumber', u.emirates_id_number,
+            'expiryDate', u.emirates_id_expiry,
             'hasExpiry', true
           ),
           json_build_object(
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'passport' LIMIT 1),
             'slug', 'passport',
             'label', 'Passport',
-            'fileUrl', g.passport_front_url,
-            'documentNumber', g.passport_number,
-            'expiryDate', g.passport_expiry,
+            'frontUrl', u.passport_front_url,
+            'backUrl', NULL,
+            'documentNumber', u.passport_number,
+            'expiryDate', u.passport_expiry,
             'hasExpiry', true
           ),
           json_build_object(
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'trade_license' LIMIT 1),
             'slug', 'trade_license',
             'label', 'Trade License',
-            'fileUrl', g.trade_license_url,
+            'frontUrl', u.trade_license_url,
+            'backUrl', NULL,
             'documentNumber', NULL,
-            'expiryDate', g.trade_license_expiry,
+            'expiryDate', u.trade_license_expiry,
             'hasExpiry', true
           )
         ) AS documents
       FROM users u
-      JOIN guests g ON g.user_id = u.id
       ${whereSQL}
-      ORDER BY g.full_name ASC
+      ORDER BY u.full_name ASC
     `);
 
     return res.json(rows.rows);
@@ -538,9 +521,9 @@ router.get("/compliance", async (req: Request, res: Response) => {
 
 router.get("/users/:id/subscription", async (req: Request, res: Response) => {
   try {
-    const guestId = req.params.id;
-    const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
-    if (!guest) return res.status(404).json({ error: "Guest not found" });
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
+    const guest = { userId: resolved.userId };
 
     // First try active/trial, then fall back to most recent (cancelled/expired)
     let subRows = await db.execute(sql`
@@ -581,11 +564,10 @@ router.get("/users/:id/subscription", async (req: Request, res: Response) => {
 
 router.patch("/users/:id/subscription", async (req: Request, res: Response) => {
   try {
-    const guestId = req.params.id;
     const { planId } = req.body;
-
-    const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
-    if (!guest) return res.status(404).json({ error: "Guest not found" });
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
+    const guest = { userId: resolved.userId };
 
     const [plan] = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
     if (!plan) return res.status(404).json({ error: "Plan not found" });
@@ -667,9 +649,9 @@ router.patch("/users/:id/subscription", async (req: Request, res: Response) => {
 
 router.post("/users/:id/subscription/cancel", async (req: Request, res: Response) => {
   try {
-    const guestId = req.params.id;
-    const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
-    if (!guest) return res.status(404).json({ error: "Guest not found" });
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
+    const guest = { userId: resolved.userId };
 
     const rows = await db.execute(sql`
       SELECT s.id, s.status, p.name AS "planName"
@@ -722,7 +704,7 @@ router.get("/transactions", async (req: Request, res: Response) => {
 
     if (search) {
       const term = `%${search}%`;
-      whereClauses.push(sql`(g.full_name ILIKE ${term} OR u.email ILIKE ${term})`);
+      whereClauses.push(sql`(u.full_name ILIKE ${term} OR u.email ILIKE ${term})`);
     }
     if (status && status !== "all") {
       whereClauses.push(sql`i.invoice_status = ${status as string}`);
@@ -742,7 +724,6 @@ router.get("/transactions", async (req: Request, res: Response) => {
         (SELECT COUNT(DISTINCT s.user_id)::int FROM subscriptions s WHERE s.status IN ('active', 'trial')) AS "totalSubscribers"
       FROM invoices i
       JOIN users u ON u.id = i.user_id
-      JOIN guests g ON g.user_id = u.id
       ${whereSQL}
     `);
 
@@ -750,11 +731,10 @@ router.get("/transactions", async (req: Request, res: Response) => {
     const dataRows = await db.execute(sql`
       SELECT i.id, i.amount, i.invoice_status AS "status", i.paid_at AS "paidAt",
              i.created_at AS "createdAt",
-             g.full_name AS "userName", u.email AS "userEmail", u.role AS "userRole",
-             p.name AS "planName", g.id AS "guestId"
+             u.full_name AS "userName", u.email AS "userEmail", u.role AS "userRole",
+             p.name AS "planName", u.id AS "guestId"
       FROM invoices i
       JOIN users u ON u.id = i.user_id
-      JOIN guests g ON g.user_id = u.id
       JOIN plans p ON p.id = i.plan_id
       ${whereSQL}
       ORDER BY i.created_at DESC
@@ -766,7 +746,6 @@ router.get("/transactions", async (req: Request, res: Response) => {
       SELECT COUNT(*)::int AS total
       FROM invoices i
       JOIN users u ON u.id = i.user_id
-      JOIN guests g ON g.user_id = u.id
       ${whereSQL}
     `);
 
@@ -786,31 +765,12 @@ router.get("/transactions", async (req: Request, res: Response) => {
 
 router.get("/users/:id/st-properties", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const resolved = await resolveUser(req.params.id);
+    if (!resolved) return res.status(404).json({ error: "User not found" });
+    const userId = resolved.userId;
 
-    // Look up guest to get userId and role
-    const [guest] = await db
-      .select({ userId: guests.userId })
-      .from(guests)
-      .where(eq(guests.id, id))
-      .limit(1);
-
-    if (!guest) {
-      return res.status(404).json({ error: "Guest not found" });
-    }
-
-    const userId = guest.userId;
-
-    // Get the user's role
-    const [user] = await db
-      .select({ role: users.role })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    const [user] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     let whereClause: any;
     if (user.role === "PROPERTY_MANAGER") {
@@ -891,11 +851,11 @@ router.get("/st-properties/:id", async (req: Request, res: Response) => {
     let pmName: string | null = null;
     let poName: string | null = null;
     if (property.pmUserId) {
-      const [pm] = await db.select({ fullName: guests.fullName, email: users.email }).from(users).innerJoin(guests, eq(guests.userId, users.id)).where(eq(users.id, property.pmUserId)).limit(1);
+      const [pm] = await db.select({ fullName: users.fullName, email: users.email }).from(users).where(eq(users.id, property.pmUserId)).limit(1);
       pmName = pm?.fullName || pm?.email || null;
     }
     if (property.poUserId) {
-      const [po] = await db.select({ fullName: guests.fullName, email: users.email }).from(users).innerJoin(guests, eq(guests.userId, users.id)).where(eq(users.id, property.poUserId)).limit(1);
+      const [po] = await db.select({ fullName: users.fullName, email: users.email }).from(users).where(eq(users.id, property.poUserId)).limit(1);
       poName = po?.fullName || po?.email || null;
     }
 
@@ -925,11 +885,13 @@ router.get("/st-properties/:id", async (req: Request, res: Response) => {
 // All bookings across the platform
 router.get("/bookings", async (req: Request, res: Response) => {
   try {
-    const { status, propertyId } = req.query;
+    const { status, propertyId, guestId } = req.query;
     let statusFilter = sql``;
     if (status && status !== "all") statusFilter = sql` AND b.status = ${status as string}`;
     let propFilter = sql``;
     if (propertyId) propFilter = sql` AND b.property_id = ${propertyId as string}`;
+    let guestFilter = sql``;
+    if (guestId) guestFilter = sql` AND b.guest_user_id = ${guestId as string}`;
 
     const result = await db.execute(sql`
       SELECT b.id, b.status, b.source,
@@ -945,10 +907,10 @@ router.get("/bookings", async (req: Request, res: Response) => {
         pm_g.full_name AS "pmName"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       LEFT JOIN users u ON u.id = b.guest_user_id
-      LEFT JOIN guests pm_g ON pm_g.user_id = b.pm_user_id
-      WHERE 1=1 ${statusFilter} ${propFilter}
+      LEFT JOIN users pm_g ON pm_g.id = b.pm_user_id
+      WHERE 1=1 ${statusFilter} ${propFilter} ${guestFilter}
       ORDER BY b.created_at DESC
       LIMIT 100
     `);
@@ -971,11 +933,11 @@ router.get("/bookings/:id", async (req: Request, res: Response) => {
         po_g.full_name AS "ownerName"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       LEFT JOIN users u ON u.id = b.guest_user_id
-      LEFT JOIN guests pm_g ON pm_g.user_id = b.pm_user_id
+      LEFT JOIN users pm_g ON pm_g.id = b.pm_user_id
       LEFT JOIN users pm_u ON pm_u.id = b.pm_user_id
-      LEFT JOIN guests po_g ON po_g.user_id = p.po_user_id
+      LEFT JOIN users po_g ON po_g.id = p.po_user_id
       WHERE b.id = ${id}
     `);
     if (result.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
@@ -988,6 +950,10 @@ router.get("/bookings/:id", async (req: Request, res: Response) => {
 // All reviews across the platform
 router.get("/reviews", async (req: Request, res: Response) => {
   try {
+    const { guestId } = req.query;
+    let guestFilter = sql``;
+    if (guestId) guestFilter = sql` AND r.guest_user_id = ${guestId as string}`;
+
     const result = await db.execute(sql`
       SELECT r.id, r.rating, r.title, r.description, r.pm_response AS "pmResponse",
         r.created_at AS "createdAt",
@@ -997,9 +963,10 @@ router.get("/reviews", async (req: Request, res: Response) => {
         pm_g.full_name AS "pmName"
       FROM st_reviews r
       JOIN st_properties p ON p.id = r.property_id
-      LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      LEFT JOIN users g ON g.id = r.guest_user_id
       LEFT JOIN users u ON u.id = r.guest_user_id
-      LEFT JOIN guests pm_g ON pm_g.user_id = p.pm_user_id
+      LEFT JOIN users pm_g ON pm_g.id = p.pm_user_id
+      WHERE 1=1 ${guestFilter}
       ORDER BY r.created_at DESC
     `);
     return res.json(result.rows);
@@ -1024,9 +991,9 @@ router.get("/settlements", async (req: Request, res: Response) => {
       JOIN st_properties p ON p.id = s.property_id
       LEFT JOIN st_bookings b ON b.id = s.booking_id
       LEFT JOIN st_property_expenses e ON e.id = s.expense_id
-      LEFT JOIN guests from_g ON from_g.user_id = s.from_user_id
-      LEFT JOIN guests to_g ON to_g.user_id = s.to_user_id
-      LEFT JOIN guests guest_g ON guest_g.user_id = b.guest_user_id
+      LEFT JOIN users from_g ON from_g.id = s.from_user_id
+      LEFT JOIN users to_g ON to_g.id = s.to_user_id
+      LEFT JOIN users guest_g ON guest_g.id = b.guest_user_id
       ORDER BY s.created_at DESC
     `);
     return res.json(result.rows);
@@ -1048,9 +1015,9 @@ router.get("/properties", async (req: Request, res: Response) => {
         (SELECT COUNT(*)::int FROM st_reviews r WHERE r.property_id = p.id) AS "reviewCount",
         (SELECT COALESCE(AVG(r.rating), 0) FROM st_reviews r WHERE r.property_id = p.id) AS "avgRating"
       FROM st_properties p
-      LEFT JOIN guests pm_g ON pm_g.user_id = p.pm_user_id
+      LEFT JOIN users pm_g ON pm_g.id = p.pm_user_id
       LEFT JOIN users pm_u ON pm_u.id = p.pm_user_id
-      LEFT JOIN guests po_g ON po_g.user_id = p.po_user_id
+      LEFT JOIN users po_g ON po_g.id = p.po_user_id
       ORDER BY p.created_at DESC
     `);
     return res.json(result.rows);

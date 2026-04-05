@@ -189,10 +189,34 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
 
   // Go Live / Deactivate handler
   const handleStatusChange = useCallback(
-    (newStatus: "active" | "draft" | "inactive") => {
-      saveMutation.mutate({ status: newStatus });
+    async (newStatus: "active" | "draft" | "inactive") => {
+      if (newStatus === "active") {
+        try {
+          setSaveStatus("saving");
+          await api.post(`/st-properties/${id}/publish`, {});
+          setSaveStatus("saved");
+          queryClient.invalidateQueries({ queryKey: ["/st-properties", id] });
+          setTimeout(() => setSaveStatus("idle"), 3000);
+        } catch (err: any) {
+          setSaveStatus("idle");
+          alert(err?.message || "Failed to publish property");
+        }
+      } else if (newStatus === "inactive") {
+        try {
+          setSaveStatus("saving");
+          await api.post(`/st-properties/${id}/unpublish`, {});
+          setSaveStatus("saved");
+          queryClient.invalidateQueries({ queryKey: ["/st-properties", id] });
+          setTimeout(() => setSaveStatus("idle"), 3000);
+        } catch (err: any) {
+          setSaveStatus("idle");
+          alert(err?.message || "Failed to deactivate property");
+        }
+      } else {
+        saveMutation.mutate({ status: newStatus });
+      }
     },
-    [saveMutation],
+    [saveMutation, id, queryClient],
   );
 
   // Auto-save timer — refresh cache periodically if dirty

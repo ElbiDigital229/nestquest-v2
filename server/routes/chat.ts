@@ -1,21 +1,126 @@
 import { Router, Request, Response } from "express";
+import rateLimit from "express-rate-limit";
 import { db } from "../db/index";
-import { messages, guests, users, pmPoLinks, pmTeamMembers, userAuditLog, PORTAL_ROLES } from "../../shared/schema";
+import { messages, users, pmPoLinks, pmTeamMembers, userAuditLog, PORTAL_ROLES } from "../../shared/schema";
 import { eq, and, isNull, ne, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
 import { checkPlanLimit } from "../middleware/plan-limits";
+import { sanitize } from "../utils/sanitize";
 
 const router = Router();
 
 router.use(requireAuth);
 
-// ── Helper: resolve guestId for a user ─────────────────
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30,
+  message: { error: "Too many messages. Please slow down." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Helper: conversation ID for a user (now = users.id) ─
 
 async function getGuestIdForUser(userId: string): Promise<string | null> {
-  const [guest] = await db.select({ id: guests.id }).from(guests).where(eq(guests.userId, userId)).limit(1);
-  return guest?.id ?? null;
+  return userId;
 }
+
+// ── Helper: check if PM has a booking with this guest ──
+
+async function pmHasGuestAccess(pmId: string, guestId: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1 FROM st_bookings
+    WHERE pm_user_id = ${pmId} AND guest_user_id = ${guestId}
+    LIMIT 1
+  `);
+  return result.rows.length > 0;
+}
+
+// ── Helper: check if PO owns a property with a booking for this guest ──
+
+async function poHasGuestAccess(poId: string, guestId: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1 FROM st_bookings b
+    JOIN st_properties p ON p.id = b.property_id
+    WHERE p.po_user_id = ${poId} AND b.guest_user_id = ${guestId}
+    LIMIT 1
+  `);
+  return result.rows.length > 0;
+}
+
+// ── Helper: resolve actual PM user ID (handles team members) ──
+
+async function resolvePmId(userId: string, userRole: string): Promise<string> {
+  if (userRole === "PM_TEAM_MEMBER") {
+    const [tm] = await db.execute(sql`
+      SELECT pm_user_id FROM pm_team_members WHERE user_id = ${userId} AND status = 'active' LIMIT 1
+    `);
+    return (tm as any)?.pm_user_id || userId;
+  }
+  return userId;
+}
+
+// ══════════════════════════════════════════════════════
+// PM → Guest conversation list (registered before /:guestId)
+// ══════════════════════════════════════════════════════
+
+router.get("/guest-conversations", async (req: Request, res: Response) => {
+  try {
+    const { userId, userRole } = req.session;
+    if (!["PROPERTY_MANAGER", "PM_TEAM_MEMBER"].includes(userRole!)) {
+      return res.status(403).json({ error: "PM only" });
+    }
+    const pmId = await resolvePmId(userId!, userRole!);
+
+    const rows = await db.execute(sql`
+      SELECT DISTINCT ON (b.guest_user_id)
+        b.guest_user_id AS "guestId",
+        COALESCE(u.full_name, b.guest_name, 'Guest') AS "guestName",
+        u.email AS "guestEmail",
+        (SELECT content FROM messages WHERE conversation_id = b.guest_user_id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
+        (SELECT created_at FROM messages WHERE conversation_id = b.guest_user_id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
+        (SELECT COUNT(*)::int FROM messages WHERE conversation_id = b.guest_user_id AND sender_id != ${pmId} AND read_at IS NULL) AS "unreadCount"
+      FROM st_bookings b
+      LEFT JOIN users u ON u.id = b.guest_user_id
+      WHERE b.pm_user_id = ${pmId} AND b.guest_user_id IS NOT NULL
+      ORDER BY b.guest_user_id, "lastMessageAt" DESC NULLS LAST
+    `);
+    return res.json(rows.rows);
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /chat/po-guest-conversations — PO sees guests on their properties ──
+
+router.get("/po-guest-conversations", async (req: Request, res: Response) => {
+  try {
+    const { userId, userRole } = req.session;
+    if (userRole !== "PROPERTY_OWNER") {
+      return res.status(403).json({ error: "Property owners only" });
+    }
+
+    const rows = await db.execute(sql`
+      SELECT DISTINCT ON (b.guest_user_id)
+        b.guest_user_id AS "guestId",
+        COALESCE(u.full_name, b.guest_name, 'Guest') AS "guestName",
+        u.email AS "guestEmail",
+        p.public_name AS "propertyName",
+        (SELECT content FROM messages WHERE conversation_id = b.guest_user_id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
+        (SELECT created_at FROM messages WHERE conversation_id = b.guest_user_id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
+        (SELECT COUNT(*)::int FROM messages WHERE conversation_id = b.guest_user_id AND sender_id != ${userId!} AND read_at IS NULL) AS "unreadCount"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      LEFT JOIN users u ON u.id = b.guest_user_id
+      WHERE p.po_user_id = ${userId!} AND b.guest_user_id IS NOT NULL
+      ORDER BY b.guest_user_id, "lastMessageAt" DESC NULLS LAST
+    `);
+    return res.json(rows.rows);
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ══════════════════════════════════════════════════════
 // DM routes — must be registered BEFORE /:guestId routes
@@ -52,14 +157,13 @@ router.get("/dm/conversations", async (req: Request, res: Response) => {
         l.id AS "linkId",
         CASE WHEN l.pm_user_id = ${userId!} THEN l.target_user_id ELSE l.pm_user_id END AS "otherUserId",
         CASE WHEN l.pm_user_id = ${userId!} THEN l.target_role ELSE 'PROPERTY_MANAGER' END AS "otherRole",
-        g.full_name AS "otherName",
+        u.full_name AS "otherName",
         u.email AS "otherEmail",
         (SELECT content FROM messages WHERE conversation_id = l.id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
         (SELECT created_at FROM messages WHERE conversation_id = l.id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
         (SELECT COUNT(*)::int FROM messages WHERE conversation_id = l.id AND sender_id != ${userId!} AND read_at IS NULL) AS "unreadCount"
       FROM pm_po_links l
       JOIN users u ON u.id = CASE WHEN l.pm_user_id = ${userId!} THEN l.target_user_id ELSE l.pm_user_id END
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE (l.pm_user_id = ${userId!} OR l.target_user_id = ${userId!})
       AND l.status = 'accepted'
 
@@ -69,22 +173,21 @@ router.get("/dm/conversations", async (req: Request, res: Response) => {
         tm.id AS "linkId",
         CASE WHEN tm.pm_user_id = ${userId!} THEN tm.user_id ELSE tm.pm_user_id END AS "otherUserId",
         CASE WHEN tm.pm_user_id = ${userId!} THEN 'PM_TEAM_MEMBER' ELSE 'PROPERTY_MANAGER' END AS "otherRole",
-        g2.full_name AS "otherName",
+        u2.full_name AS "otherName",
         u2.email AS "otherEmail",
         (SELECT content FROM messages WHERE conversation_id = tm.id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
         (SELECT created_at FROM messages WHERE conversation_id = tm.id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
         (SELECT COUNT(*)::int FROM messages WHERE conversation_id = tm.id AND sender_id != ${userId!} AND read_at IS NULL) AS "unreadCount"
       FROM pm_team_members tm
       JOIN users u2 ON u2.id = CASE WHEN tm.pm_user_id = ${userId!} THEN tm.user_id ELSE tm.pm_user_id END
-      LEFT JOIN guests g2 ON g2.user_id = u2.id
       WHERE (tm.pm_user_id = ${userId!} OR tm.user_id = ${userId!})
       AND tm.status = 'active'
 
       ORDER BY "lastMessageAt" DESC NULLS LAST
     `);
     return res.json(rows.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -105,12 +208,12 @@ router.get("/dm/:linkId/messages", async (req: Request, res: Response) => {
     if (!link) return res.status(403).json({ error: "Access denied" });
     const rows = await db.select().from(messages).where(eq(messages.conversationId, link.id)).orderBy(messages.createdAt).limit(200);
     return res.json(rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-router.post("/dm/:linkId/messages", async (req: Request, res: Response) => {
+router.post("/dm/:linkId/messages", messageLimiter, async (req: Request, res: Response) => {
   try {
     const { userId, userRole } = req.session;
     const { content } = req.body;
@@ -130,13 +233,13 @@ router.post("/dm/:linkId/messages", async (req: Request, res: Response) => {
       conversationId: link.id,
       senderId: userId!,
       senderRole: userRole!,
-      content: content.trim(),
+      content: sanitize(content),
     }).returning();
 
     try {
       const otherUserId = link.pmUserId === userId ? link.targetUserId : link.pmUserId;
-      const [senderGuest] = await db.select({ fullName: guests.fullName }).from(guests).where(eq(guests.userId, userId!)).limit(1);
-      const senderName = senderGuest?.fullName || "A user";
+      const [senderUser] = await db.select({ fullName: users.fullName }).from(users).where(eq(users.id, userId!)).limit(1);
+      const senderName = senderUser?.fullName || "A user";
       await createNotification({
         userId: otherUserId,
         type: "NEW_MESSAGE",
@@ -159,8 +262,8 @@ router.post("/dm/:linkId/messages", async (req: Request, res: Response) => {
     } catch {}
 
     return res.status(201).json(msg);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -173,8 +276,8 @@ router.patch("/dm/:linkId/read", async (req: Request, res: Response) => {
       and(eq(messages.conversationId, link.id), ne(messages.senderId, userId!), isNull(messages.readAt))
     );
     return res.json({ ok: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -189,11 +292,20 @@ router.get("/:guestId/messages", async (req: Request, res: Response) => {
     const { guestId } = req.params;
     const { userId, userRole } = req.session;
 
-    // Non-admin users can only access their own conversation
+    // Non-admin users can only access their own conversation, or PM/PO with booking access
     if ((PORTAL_ROLES as readonly string[]).includes(userRole!)) {
       const myGuestId = await getGuestIdForUser(userId!);
       if (myGuestId !== guestId) {
-        return res.status(403).json({ error: "Access denied" });
+        if (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER") {
+          const pmId = await resolvePmId(userId!, userRole!);
+          const hasAccess = await pmHasGuestAccess(pmId, guestId);
+          if (!hasAccess) return res.status(403).json({ error: "Access denied" });
+        } else if (userRole === "PROPERTY_OWNER") {
+          const hasAccess = await poHasGuestAccess(userId!, guestId);
+          if (!hasAccess) return res.status(403).json({ error: "Access denied" });
+        } else {
+          return res.status(403).json({ error: "Access denied" });
+        }
       }
     }
 
@@ -205,14 +317,14 @@ router.get("/:guestId/messages", async (req: Request, res: Response) => {
       .limit(200);
 
     return res.json(rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // ── POST /api/chat/:guestId/messages ───────────────────
 
-router.post("/:guestId/messages", async (req: Request, res: Response) => {
+router.post("/:guestId/messages", messageLimiter, async (req: Request, res: Response) => {
   try {
     const { guestId } = req.params;
     const { content } = req.body;
@@ -222,11 +334,20 @@ router.post("/:guestId/messages", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Message content is required" });
     }
 
-    // Non-admin users can only post to their own conversation
+    // Non-admin users can only post to their own conversation, or PM/PO with booking access
     if ((PORTAL_ROLES as readonly string[]).includes(userRole!)) {
       const myGuestId = await getGuestIdForUser(userId!);
       if (myGuestId !== guestId) {
-        return res.status(403).json({ error: "Access denied" });
+        if (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER") {
+          const pmId = await resolvePmId(userId!, userRole!);
+          const hasAccess = await pmHasGuestAccess(pmId, guestId);
+          if (!hasAccess) return res.status(403).json({ error: "Access denied" });
+        } else if (userRole === "PROPERTY_OWNER") {
+          const hasAccess = await poHasGuestAccess(userId!, guestId);
+          if (!hasAccess) return res.status(403).json({ error: "Access denied" });
+        } else {
+          return res.status(403).json({ error: "Access denied" });
+        }
       }
     }
 
@@ -236,29 +357,47 @@ router.post("/:guestId/messages", async (req: Request, res: Response) => {
         conversationId: guestId,
         senderId: userId!,
         senderRole: userRole!,
-        content: content.trim(),
+        content: sanitize(content),
       })
       .returning();
 
     // Send notification
     try {
+      const [senderUser] = await db.select({ fullName: users.fullName }).from(users).where(eq(users.id, userId!)).limit(1);
+      const senderName = senderUser?.fullName || "A user";
+
       if (userRole === "SUPER_ADMIN") {
-        // Admin sent message → notify the guest's user
-        const [guest] = await db.select({ userId: guests.userId }).from(guests).where(eq(guests.id, guestId)).limit(1);
-        if (guest) {
-          await createNotification({
-            userId: guest.userId,
-            type: "NEW_MESSAGE",
-            title: "New message from NestQuest Support",
-            body: content.trim().slice(0, 100),
-            linkUrl: "/portal/messages",
-            relatedId: msg.id,
-          });
-        }
+        // SA → notify the guest
+        await createNotification({
+          userId: guestId,
+          type: "NEW_MESSAGE",
+          title: "New message from NestQuest Support",
+          body: content.trim().slice(0, 100),
+          linkUrl: "/portal/messages",
+          relatedId: msg.id,
+        });
+      } else if (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER") {
+        // PM → notify the guest
+        await createNotification({
+          userId: guestId,
+          type: "NEW_MESSAGE",
+          title: `New message from ${senderName}`,
+          body: content.trim().slice(0, 100),
+          linkUrl: "/portal/messages",
+          relatedId: msg.id,
+        });
+      } else if (userRole === "PROPERTY_OWNER") {
+        // PO → notify the guest
+        await createNotification({
+          userId: guestId,
+          type: "NEW_MESSAGE",
+          title: `New message from ${senderName} (Property Owner)`,
+          body: content.trim().slice(0, 100),
+          linkUrl: "/portal/messages",
+          relatedId: msg.id,
+        });
       } else {
-        // Portal user sent message → notify all super admins
-        const [senderGuest] = await db.select({ fullName: guests.fullName }).from(guests).where(eq(guests.userId, userId!)).limit(1);
-        const senderName = senderGuest?.fullName || "A user";
+        // Guest/portal user → notify all super admins
         const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "SUPER_ADMIN"));
         for (const admin of admins) {
           await createNotification({
@@ -287,8 +426,8 @@ router.post("/:guestId/messages", async (req: Request, res: Response) => {
     } catch {}
 
     return res.status(201).json(msg);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -312,8 +451,8 @@ router.patch("/:guestId/read", async (req: Request, res: Response) => {
       );
 
     return res.json({ ok: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -332,11 +471,25 @@ router.get("/conversations", async (req: Request, res: Response) => {
       const guestRows = await db.execute(sql`
         SELECT
           m.conversation_id AS "guestId",
-          'NestQuest Support' AS "fullName",
-          '' AS email,
+          COALESCE(
+            (SELECT u2.full_name FROM users u2
+             JOIN messages m2 ON m2.sender_id = u2.id
+             WHERE m2.conversation_id = m.conversation_id
+               AND m2.sender_role = 'PROPERTY_MANAGER'
+             LIMIT 1),
+            'NestQuest Support'
+          ) AS "fullName",
+          COALESCE(
+            (SELECT u.email FROM users u
+             JOIN messages m2 ON m2.sender_id = u.id
+             WHERE m2.conversation_id = m.conversation_id
+               AND m2.sender_role = 'PROPERTY_MANAGER'
+             LIMIT 1),
+            ''
+          ) AS email,
           (SELECT content FROM messages WHERE conversation_id = m.conversation_id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
           (SELECT created_at FROM messages WHERE conversation_id = m.conversation_id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
-          COUNT(CASE WHEN m.read_at IS NULL AND m.sender_role = 'SUPER_ADMIN' THEN 1 END)::int AS "unreadCount"
+          COUNT(CASE WHEN m.read_at IS NULL AND m.sender_id != ${userId} THEN 1 END)::int AS "unreadCount"
         FROM messages m
         WHERE m.conversation_id = ${guestId}
         GROUP BY m.conversation_id
@@ -348,22 +501,22 @@ router.get("/conversations", async (req: Request, res: Response) => {
     const rows = await db.execute(sql`
       SELECT
         m.conversation_id AS "guestId",
-        g.full_name AS "fullName",
+        u.full_name AS "fullName",
         u.email AS email,
         u.role AS "userRole",
         (SELECT content FROM messages WHERE conversation_id = m.conversation_id ORDER BY created_at DESC LIMIT 1) AS "lastMessage",
         (SELECT created_at FROM messages WHERE conversation_id = m.conversation_id ORDER BY created_at DESC LIMIT 1) AS "lastMessageAt",
         COUNT(CASE WHEN m.read_at IS NULL AND m.sender_role != 'SUPER_ADMIN' THEN 1 END)::int AS "unreadCount"
       FROM messages m
-      JOIN guests g ON g.id = m.conversation_id
-      JOIN users u ON u.id = g.user_id
-      GROUP BY m.conversation_id, g.full_name, u.email, u.role
+      JOIN users u ON u.id = m.conversation_id
+      WHERE EXISTS (SELECT 1 FROM users u2 WHERE u2.id = m.conversation_id)
+      GROUP BY m.conversation_id, u.full_name, u.email, u.role
       ORDER BY "lastMessageAt" DESC
     `);
 
     return res.json(rows.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -407,8 +560,8 @@ router.get("/unread-count", async (req: Request, res: Response) => {
       WHERE read_at IS NULL AND sender_role != 'SUPER_ADMIN'
     `);
     return res.json({ count: (result as any).count ?? 0 });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -424,19 +577,18 @@ router.get("/users", async (req: Request, res: Response) => {
 
     const rows = await db.execute(sql`
       SELECT
-        g.id AS "guestId",
-        g.full_name AS "fullName",
+        u.id AS "guestId",
+        u.full_name AS "fullName",
         u.email AS email,
         u.role AS "userRole"
-      FROM guests g
-      JOIN users u ON u.id = g.user_id
-      WHERE u.status = 'active'
-      ORDER BY g.full_name ASC
+      FROM users u
+      WHERE u.status = 'active' AND u.full_name IS NOT NULL
+      ORDER BY u.full_name ASC
     `);
 
     return res.json(rows.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

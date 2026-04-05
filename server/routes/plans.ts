@@ -30,10 +30,9 @@ router.get("/", async (_req: Request, res: Response) => {
     const plansWithSubscribers = await Promise.all(
       (rows.rows as any[]).map(async (plan) => {
         const subs = await db.execute(sql`
-          SELECT u.email, g.full_name AS "fullName", s.status, s.trial_ends_at AS "trialEndsAt", g.id AS "guestId"
+          SELECT u.email, u.full_name AS "fullName", s.status, s.trial_ends_at AS "trialEndsAt", u.id AS "guestId"
           FROM subscriptions s
           JOIN users u ON u.id = s.user_id
-          JOIN guests g ON g.user_id = u.id
           WHERE s.plan_id = ${plan.id} AND s.status IN ('active', 'trial')
           ORDER BY s.created_at DESC
         `);

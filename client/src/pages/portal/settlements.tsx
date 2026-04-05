@@ -254,10 +254,21 @@ export default function SettlementsPage() {
                         </Button>
                       )}
                       {s.status === "pending" && !isPmOrTeam && (
-                        <p className="text-xs text-amber-600 font-medium">Pending</p>
+                        <p className="text-xs text-amber-600 font-medium">Awaiting Payment</p>
                       )}
-                      {(s.status === "paid" || s.status === "confirmed") && (
-                        <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle className="h-3 w-3" /> Settled</span>
+                      {s.status === "paid" && s.toUserId === user?.id && (
+                        <Button size="sm" variant="outline" className="text-green-700 border-green-300 hover:bg-green-50"
+                          onClick={(e) => { e.stopPropagation(); confirmMutation.mutate(s.id); }}
+                          disabled={confirmMutation.isPending}>
+                          {confirmMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle className="h-3 w-3 mr-1" />}
+                          Confirm Receipt
+                        </Button>
+                      )}
+                      {s.status === "paid" && s.toUserId !== user?.id && (
+                        <span className="text-xs text-blue-600 flex items-center gap-1"><CheckCircle className="h-3 w-3" /> Paid — awaiting confirmation</span>
+                      )}
+                      {s.status === "confirmed" && (
+                        <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle className="h-3 w-3" /> Confirmed</span>
                       )}
                     </div>
                   </div>
@@ -361,6 +372,14 @@ export default function SettlementsPage() {
                   {s.status === "pending" && isPmOrTeam && (
                     <Button className="w-full" onClick={() => { setDetailDialog(null); setPayDialog(s); setPayNotes(""); setProofUrl(""); }}>
                       Mark as Paid
+                    </Button>
+                  )}
+                  {s.status === "paid" && s.toUserId === user?.id && (
+                    <Button className="w-full" variant="outline"
+                      onClick={() => { confirmMutation.mutate(s.id); setDetailDialog(null); }}
+                      disabled={confirmMutation.isPending}>
+                      {confirmMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-2" />}
+                      Confirm Receipt
                     </Button>
                   )}
                 </div>

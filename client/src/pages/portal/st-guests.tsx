@@ -9,6 +9,8 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { BookingStatusBadge, KycStatusBadge } from "@/components/status-badge";
+import { useFilters } from "@/hooks/use-filters";
 import {
   Contact,
   Search,
@@ -100,24 +102,7 @@ function formatCurrency(v: string | number | null) {
   return `AED ${num.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
-const STATUS_STYLES: Record<string, { label: string; color: string }> = {
-  requested: { label: "Requested", color: "bg-yellow-100 text-yellow-800" },
-  confirmed: { label: "Confirmed", color: "bg-blue-100 text-blue-800" },
-  checked_in: { label: "Checked In", color: "bg-green-100 text-green-800" },
-  checked_out: { label: "Checked Out", color: "bg-orange-100 text-orange-800" },
-  completed: { label: "Completed", color: "bg-emerald-100 text-emerald-800" },
-  cancelled: { label: "Cancelled", color: "bg-red-100 text-red-800" },
-  declined: { label: "Declined", color: "bg-gray-100 text-gray-800" },
-};
-
-const KYC_STYLES: Record<string, { label: string; color: string }> = {
-  verified: { label: "Verified", color: "bg-green-100 text-green-800" },
-  pending: { label: "Pending", color: "bg-yellow-100 text-yellow-800" },
-  rejected: { label: "Rejected", color: "bg-red-100 text-red-800" },
-};
-
 export default function StGuests() {
-  const [searchQuery, setSearchQuery] = useState("");
   const [selectedGuestId, setSelectedGuestId] = useState<string | null>(null);
 
   const { data: guests = [], isLoading } = useQuery<GuestSummary[]>({
@@ -131,15 +116,8 @@ export default function StGuests() {
     enabled: !!selectedGuestId,
   });
 
-  const filtered = guests.filter((g) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      (g.name || "").toLowerCase().includes(q) ||
-      g.email.toLowerCase().includes(q) ||
-      (g.phone || "").includes(q) ||
-      (g.nationality || "").toLowerCase().includes(q)
-    );
+  const { search: searchQuery, setSearch: setSearchQuery, filtered } = useFilters(guests, {
+    searchFields: ["name", "email", "phone", "nationality"],
   });
 
   if (isLoading) {
@@ -202,7 +180,6 @@ export default function StGuests() {
             </thead>
             <tbody>
               {filtered.map((g) => {
-                const kyc = KYC_STYLES[g.kycStatus || ""] || { label: g.kycStatus || "N/A", color: "bg-gray-100 text-gray-700" };
                 return (
                   <tr
                     key={g.userId}
@@ -228,7 +205,7 @@ export default function StGuests() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge className={`text-[10px] border-0 ${kyc.color}`}>{kyc.label}</Badge>
+                      <KycStatusBadge status={g.kycStatus} className="text-[10px]" />
                     </td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-2">
@@ -299,10 +276,7 @@ export default function StGuests() {
                         )}
                       </div>
                     </div>
-                    <Badge className={`text-xs border-0 ${KYC_STYLES[guestHistory.guest.kycStatus || ""]?.color || "bg-gray-100 text-gray-700"}`}>
-                      <ShieldCheck className="h-3 w-3 mr-1" />
-                      KYC: {KYC_STYLES[guestHistory.guest.kycStatus || ""]?.label || guestHistory.guest.kycStatus || "N/A"}
-                    </Badge>
+                    <KycStatusBadge status={guestHistory.guest.kycStatus} className="text-xs" />
                   </div>
 
                   <Separator className="my-3" />
@@ -376,7 +350,6 @@ export default function StGuests() {
                 </h4>
                 <div className="space-y-3">
                   {guestHistory.bookings.map((b) => {
-                    const statusInfo = STATUS_STYLES[b.status] || { label: b.status, color: "bg-gray-100 text-gray-700" };
                     return (
                       <Card key={b.id} className="overflow-hidden">
                         <CardContent className="p-4">
@@ -396,7 +369,7 @@ export default function StGuests() {
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <p className="font-medium text-sm truncate">{b.propertyName}</p>
-                                  <Badge className={`text-[10px] border-0 ${statusInfo.color}`}>{statusInfo.label}</Badge>
+                                  <BookingStatusBadge status={b.status} className="text-[10px]" />
                                 </div>
                                 <p className="text-xs text-muted-foreground mt-0.5">
                                   {[b.buildingName, b.unitNumber ? `Unit ${b.unitNumber}` : null].filter(Boolean).join(", ")}

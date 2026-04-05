@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { PropertyStatusBadge } from "@/components/status-badge";
 import {
   Card,
   CardContent,
@@ -79,11 +80,6 @@ function getCompletedSteps(p: StProperty): number {
   return count;
 }
 
-const statusBadge: Record<string, { label: string; className: string }> = {
-  draft: { label: "Draft", className: "border-yellow-500 text-yellow-700 bg-yellow-50" },
-  active: { label: "Active", className: "bg-green-600 text-white" },
-  inactive: { label: "Inactive", className: "bg-gray-200 text-gray-600" },
-};
 
 function formatDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -231,7 +227,6 @@ export default function StProperties() {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {filteredProperties.map((property) => {
             const completed = getCompletedSteps(property);
-            const badge = statusBadge[property.status] || statusBadge.draft;
             const isDraft = property.status === "draft";
             const progressPercent = Math.round((completed / TOTAL_STEPS) * 100);
 
@@ -250,9 +245,7 @@ export default function StProperties() {
                       <Home className="h-10 w-10 text-muted-foreground/40" />
                     </div>
                   )}
-                  <Badge className={`absolute top-2 right-2 ${badge.className}`}>
-                    {badge.label}
-                  </Badge>
+                  <PropertyStatusBadge status={property.status} className="absolute top-2 right-2" />
                 </div>
 
                 <CardHeader className="pb-2">
@@ -354,7 +347,6 @@ export default function StProperties() {
             <tbody>
               {filteredProperties.map((property) => {
                 const completed = getCompletedSteps(property);
-                const badge = statusBadge[property.status] || statusBadge.draft;
                 const isDraft = property.status === "draft";
                 const progressPercent = Math.round((completed / TOTAL_STEPS) * 100);
 
@@ -420,9 +412,7 @@ export default function StProperties() {
 
                     {/* Status */}
                     <td className="px-4 py-3">
-                      <Badge className={`text-xs ${badge.className}`}>
-                        {badge.label}
-                      </Badge>
+                      <PropertyStatusBadge status={property.status} className="text-xs" />
                     </td>
 
                     {/* Progress */}

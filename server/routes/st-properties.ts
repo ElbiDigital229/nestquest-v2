@@ -1,19 +1,23 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas, pmPoLinks, guests, users } from "../../shared/schema";
+import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas, pmPoLinks, users } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { logPropertyActivity } from "../utils/property-activity";
 import { createNotification } from "../utils/notify";
 import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
 
-// Helper: get PM user ID (resolves team member → parent PM)
+// Helper: get PM user ID (resolves team member → parent PM; SA can pass ?pmUserId=xxx)
 async function resolvePmId(req: Request): Promise<string> {
   const role = req.session.userRole;
+  if (role === "SUPER_ADMIN" && req.query.pmUserId) return req.query.pmUserId as string;
   if (role === "PROPERTY_MANAGER") return req.session.userId!;
   if (role === "PM_TEAM_MEMBER") return getPmUserId(req);
   return req.session.userId!;
 }
+
+// Helper: true if requester is SA (bypasses ownership checks)
+function isSA(req: Request) { return req.session.userRole === "SUPER_ADMIN"; }
 
 const router = Router();
 
@@ -58,8 +62,8 @@ router.get("/areas", async (req: Request, res: Response) => {
     }
 
     return res.json(results);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -127,8 +131,8 @@ router.get("/", requirePmPermission("properties.view"), async (req: Request, res
     `);
 
     return res.json(results.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -162,8 +166,8 @@ router.post("/", requirePmPermission("properties.create"), async (req: Request, 
     await logPropertyActivity(result.id, actorId, "property_created", "Property draft created");
 
     return res.status(201).json({ id: result.id });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -185,7 +189,7 @@ router.get("/po/my-properties", async (req: Request, res: Response) => {
         a.purchase_price AS "purchasePrice", a.purchase_date AS "purchaseDate",
         (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
         (SELECT name FROM areas WHERE id = p.area_id) AS "areaName",
-        (SELECT full_name FROM guests WHERE user_id = p.pm_user_id LIMIT 1) AS "pmName"
+        (SELECT full_name FROM users WHERE id = p.pm_user_id LIMIT 1) AS "pmName"
       FROM st_properties p
       LEFT JOIN st_acquisition_details a ON a.property_id = p.id
       WHERE p.po_user_id = ${userId}
@@ -194,8 +198,8 @@ router.get("/po/my-properties", async (req: Request, res: Response) => {
     const results = propResult.rows || [];
 
     return res.json(results);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -203,8 +207,12 @@ router.get("/po/my-properties", async (req: Request, res: Response) => {
 
 router.get("/reports/earnings", async (req: Request, res: Response) => {
   try {
-    if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
-    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+    if (userRole !== "SUPER_ADMIN" && !isPM(req)) return res.status(403).json({ error: "Access denied" });
+    // SA can pass ?pmUserId=xxx to view a specific PM's reports
+    const userId = (userRole === "SUPER_ADMIN" && req.query.pmUserId)
+      ? req.query.pmUserId as string
+      : req.session.userId!;
 
     // Per-property breakdown (include fee type)
     const propertyResult = await db.execute(sql`
@@ -266,7 +274,7 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
         COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE p.pm_user_id = ${userId}
         AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
       ORDER BY b.check_in_date DESC
@@ -289,8 +297,8 @@ router.get("/reports/earnings", async (req: Request, res: Response) => {
       properties: propertyResult.rows,
       recentBookings: recentResult.rows,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -300,13 +308,15 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
   try {
     const userRole = req.session.userRole!;
 
-    if (!["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "PROPERTY_OWNER"].includes(userRole!)) {
+    if (userRole !== "SUPER_ADMIN" && !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "PROPERTY_OWNER"].includes(userRole!)) {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    // For PM/team, resolve to PM ID; for PO use own ID
+    // SA can pass ?pmUserId=xxx; otherwise resolve normally
     const isPmOrTeam = userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER";
-    const userId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
+    const userId = (userRole === "SUPER_ADMIN" && req.query.pmUserId)
+      ? req.query.pmUserId as string
+      : isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
 
     // Get settlements where user is either from or to
     const result = await db.execute(sql`
@@ -329,9 +339,9 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
       JOIN st_properties p ON p.id = s.property_id
       LEFT JOIN st_bookings b ON b.id = s.booking_id
       LEFT JOIN st_property_expenses e ON e.id = s.expense_id
-      LEFT JOIN guests from_g ON from_g.user_id = s.from_user_id
-      LEFT JOIN guests to_g ON to_g.user_id = s.to_user_id
-      LEFT JOIN guests guest_g ON guest_g.user_id = b.guest_user_id
+      LEFT JOIN users from_g ON from_g.id = s.from_user_id
+      LEFT JOIN users to_g ON to_g.id = s.to_user_id
+      LEFT JOIN users guest_g ON guest_g.id = b.guest_user_id
       WHERE s.from_user_id = ${userId} OR s.to_user_id = ${userId}
       ORDER BY s.created_at DESC
     `);
@@ -362,8 +372,8 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
         totalReceived: totalReceived.toFixed(2),
       },
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -395,7 +405,7 @@ router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), a
       `);
     }
     // Get PM name for notification
-    const pmNameResult = await db.execute(sql`SELECT full_name FROM guests WHERE user_id = ${resolvedId} LIMIT 1`);
+    const pmNameResult = await db.execute(sql`SELECT full_name FROM users WHERE id = ${resolvedId} LIMIT 1`);
     const pmName = (pmNameResult.rows[0] as any)?.full_name || "Property Manager";
 
     await createNotification({
@@ -408,8 +418,55 @@ router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), a
     });
 
     return res.json({ status: "paid" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /po-reviews — Reviews for properties owned by this PO ──
+
+router.get("/po-reviews", async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+    if (userRole !== "PROPERTY_OWNER" && userRole !== "SUPER_ADMIN") {
+      return res.status(403).json({ error: "Property owners only" });
+    }
+
+    const result = await db.execute(sql`
+      SELECT
+        r.id, r.rating, r.title, r.description,
+        r.pm_response AS "pmResponse", r.pm_responded_at AS "pmRespondedAt",
+        r.created_at AS "createdAt",
+        COALESCE(g.full_name, 'Guest') AS "guestName",
+        p.public_name AS "propertyName", p.id AS "propertyId",
+        b.check_in_date AS "checkInDate", b.check_out_date AS "checkOutDate"
+      FROM st_reviews r
+      JOIN st_bookings b ON b.id = r.booking_id
+      JOIN st_properties p ON p.id = r.property_id
+      LEFT JOIN users g ON g.id = r.guest_user_id
+      WHERE p.po_user_id = ${userId}
+      ORDER BY r.created_at DESC
+    `);
+
+    const reviews = result.rows as any[];
+    const avgRating = reviews.length > 0
+      ? (reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1)
+      : null;
+
+    return res.json({
+      reviews,
+      summary: {
+        total: reviews.length,
+        avgRating,
+        byRating: [5, 4, 3, 2, 1].map(n => ({
+          stars: n,
+          count: reviews.filter(r => r.rating === n).length,
+        })),
+      },
+    });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -431,8 +488,8 @@ router.patch("/settlements/:id/confirm", async (req: Request, res: Response) => 
     `);
 
     return res.json({ status: "confirmed" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -501,13 +558,12 @@ router.get("/documents", requirePmPermission("documents.view"), async (req: Requ
         NULL AS "propertyName",
         NULL AS "buildingName",
         NULL AS "unitNumber",
-        g.full_name AS "userName",
+        u.full_name AS "userName",
         u.email AS "userEmail",
         u.role AS "userRole"
       FROM user_documents ud
       JOIN document_types dt ON dt.id = ud.document_type_id
       JOIN users u ON u.id = ud.user_id
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE ${userDocsWhereClause}
       ORDER BY ud.created_at DESC
     `);
@@ -516,13 +572,209 @@ router.get("/documents", requirePmPermission("documents.view"), async (req: Requ
       propertyDocuments: propertyDocs.rows,
       userDocuments: userDocs.rows,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // ── GET /:id — Get full property details ──
 
+// ── GET /analytics — occupancy, ADR, RevPAR, and more ──
+
+router.get("/analytics", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+  try {
+    const pmUserId = await resolvePmId(req);
+    const { from, to, propertyId } = req.query as Record<string, string>;
+
+    // Default: last 30 days
+    const today = new Date();
+    const endDate = to ? new Date(to) : new Date(today);
+    const startDate = from ? new Date(from) : new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+    // Use plain date strings (YYYY-MM-DD) to avoid timezone cast issues with date columns
+    const rangeStartDate = startDate.toISOString().slice(0, 10);
+    const rangeEndDate = endDate.toISOString().slice(0, 10);
+    const daysInRange = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+    // null means "all properties"
+    const propId: string | null = propertyId || null;
+
+    // ── Property count — all non-draft properties the PM has ──
+    // Draft properties with confirmed bookings still need to appear in occupancy denominator
+    const propCountRes = await db.execute(sql`
+      SELECT COUNT(*)::int AS count FROM st_properties p
+      WHERE p.pm_user_id = ${pmUserId}
+        AND p.status IN ('active', 'inactive')
+        AND (${propId}::varchar IS NULL OR p.id = ${propId}::varchar)
+    `);
+    // Also count properties that have at least one confirmed booking (catches draft properties that are live)
+    const propWithBookingsRes = await db.execute(sql`
+      SELECT COUNT(DISTINCT p.id)::int AS count FROM st_properties p
+      JOIN st_bookings b ON b.property_id = p.id
+      WHERE p.pm_user_id = ${pmUserId}
+        AND b.status IN ('confirmed','checked_in','checked_out','completed')
+        AND (${propId}::varchar IS NULL OR p.id = ${propId}::varchar)
+    `);
+    const activeProperties = Math.max(
+      (propCountRes.rows[0] as any)?.count || 0,
+      (propWithBookingsRes.rows[0] as any)?.count || 0
+    );
+    const totalAvailableNights = activeProperties * daysInRange;
+
+    // ── Booked nights + revenue in range (overlap on date columns) ──
+    const bookedNightsRes = await db.execute(sql`
+      SELECT
+        COALESCE(SUM(
+          GREATEST(0,
+            LEAST(b.check_out_date, ${rangeEndDate}::date) - GREATEST(b.check_in_date, ${rangeStartDate}::date)
+          )
+        ), 0)::int AS booked_nights,
+        -- Revenue = rental income only (excludes security deposit)
+        COALESCE(SUM(
+          COALESCE(b.subtotal::decimal, 0)
+          + COALESCE(b.tourism_tax::decimal, 0)
+          + COALESCE(b.vat::decimal, 0)
+        ), 0)::numeric(10,2) AS revenue,
+        COUNT(b.id)::int AS bookings,
+        COALESCE(AVG(b.total_nights), 0)::numeric(10,2) AS avg_stay,
+        COALESCE(AVG(
+          EXTRACT(EPOCH FROM (b.check_in_date - b.created_at::date)) / 86400
+        ), 0)::numeric(10,1) AS avg_lead_days
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE p.pm_user_id = ${pmUserId}
+        AND b.status IN ('confirmed','checked_in','checked_out','completed')
+        AND b.check_out_date > ${rangeStartDate}::date
+        AND b.check_in_date < ${rangeEndDate}::date
+        AND (${propId}::varchar IS NULL OR b.property_id = ${propId}::varchar)
+    `);
+    const booked = (bookedNightsRes.rows[0] as any) || {};
+    const bookedNights = parseFloat(booked.booked_nights || "0");
+    const revenue = parseFloat(booked.revenue || "0");
+    const totalBookings = booked.bookings || 0;
+    const avgStay = parseFloat(booked.avg_stay || "0");
+    const avgLeadDays = parseFloat(booked.avg_lead_days || "0");
+
+    const occupancyRate = totalAvailableNights > 0 ? (bookedNights / totalAvailableNights) * 100 : 0;
+    const adr = bookedNights > 0 ? revenue / bookedNights : 0;
+    const revpar = totalAvailableNights > 0 ? revenue / totalAvailableNights : 0;
+
+    // ── Cancellation stats ──
+    const cancelRes = await db.execute(sql`
+      SELECT
+        COUNT(CASE WHEN b.status = 'cancelled' THEN 1 END)::int AS cancelled,
+        COUNT(CASE WHEN b.status = 'declined' THEN 1 END)::int AS declined,
+        COUNT(*)::int AS total
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE p.pm_user_id = ${pmUserId}
+        AND b.created_at::date >= ${rangeStartDate}::date
+        AND b.created_at::date <= ${rangeEndDate}::date
+        AND (${propId}::varchar IS NULL OR b.property_id = ${propId}::varchar)
+    `);
+    const cancel = (cancelRes.rows[0] as any) || {};
+
+    // ── Monthly trend — last 13 months (check_in_date falls within last 13 months) ──
+    const monthlyRes = await db.execute(sql`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', b.check_in_date), 'YYYY-MM') AS month,
+        COUNT(b.id)::int AS bookings,
+        COALESCE(SUM(b.total_nights), 0)::int AS nights,
+        COALESCE(SUM(
+          COALESCE(b.subtotal::decimal, 0)
+          + COALESCE(b.tourism_tax::decimal, 0)
+          + COALESCE(b.vat::decimal, 0)
+        ), 0)::numeric(10,2) AS revenue
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE p.pm_user_id = ${pmUserId}
+        AND b.status IN ('confirmed','checked_in','checked_out','completed')
+        AND b.check_in_date >= (CURRENT_DATE - INTERVAL '13 months')
+        AND (${propId}::varchar IS NULL OR b.property_id = ${propId}::varchar)
+      GROUP BY DATE_TRUNC('month', b.check_in_date)
+      ORDER BY DATE_TRUNC('month', b.check_in_date)
+    `);
+
+    // ── Booking source breakdown ──
+    const sourceRes = await db.execute(sql`
+      SELECT
+        COALESCE(b.source::text, 'website') AS source,
+        COUNT(b.id)::int AS bookings,
+        COALESCE(SUM(
+          COALESCE(b.subtotal::decimal, 0)
+          + COALESCE(b.tourism_tax::decimal, 0)
+          + COALESCE(b.vat::decimal, 0)
+        ), 0)::numeric(10,2) AS revenue
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE p.pm_user_id = ${pmUserId}
+        AND b.status IN ('confirmed','checked_in','checked_out','completed')
+        AND b.check_in_date >= ${rangeStartDate}::date
+        AND b.check_in_date < ${rangeEndDate}::date
+        AND (${propId}::varchar IS NULL OR b.property_id = ${propId}::varchar)
+      GROUP BY b.source
+      ORDER BY bookings DESC
+    `);
+
+    // ── Per-property performance ──
+    const propPerfRes = await db.execute(sql`
+      SELECT
+        p.id,
+        COALESCE(p.public_name, p.building_name, 'Property') AS name,
+        p.unit_number AS "unitNumber",
+        p.city::text AS city,
+        p.status::text AS status,
+        COUNT(b.id)::int AS bookings,
+        COALESCE(SUM(b.total_nights), 0)::int AS nights,
+        COALESCE(SUM(
+          COALESCE(b.subtotal::decimal, 0)
+          + COALESCE(b.tourism_tax::decimal, 0)
+          + COALESCE(b.vat::decimal, 0)
+        ), 0)::numeric(10,2) AS revenue,
+        CASE WHEN COALESCE(SUM(b.total_nights), 0) > 0
+          THEN (
+            SUM(COALESCE(b.subtotal::decimal, 0) + COALESCE(b.tourism_tax::decimal, 0) + COALESCE(b.vat::decimal, 0))
+            / SUM(b.total_nights)
+          )::numeric(10,2)
+          ELSE 0 END AS adr,
+        (COALESCE(SUM(b.total_nights), 0)::decimal / ${daysInRange} * 100)::numeric(10,1) AS occupancy
+      FROM st_properties p
+      LEFT JOIN st_bookings b ON b.property_id = p.id
+        AND b.status IN ('confirmed','checked_in','checked_out','completed')
+        AND b.check_out_date > ${rangeStartDate}::date
+        AND b.check_in_date < ${rangeEndDate}::date
+      WHERE p.pm_user_id = ${pmUserId}
+        AND (${propId}::varchar IS NULL OR p.id = ${propId}::varchar)
+      GROUP BY p.id, p.public_name, p.building_name, p.unit_number, p.city, p.status
+      ORDER BY revenue DESC
+    `);
+
+    return res.json({
+      range: { from: rangeStartDate, to: rangeEndDate, days: daysInRange },
+      summary: {
+        activeProperties,
+        totalAvailableNights,
+        bookedNights: parseFloat(bookedNights.toFixed(1)),
+        occupancyRate: parseFloat(occupancyRate.toFixed(1)),
+        revenue: parseFloat(revenue.toFixed(2)),
+        adr: parseFloat(adr.toFixed(2)),
+        revpar: parseFloat(revpar.toFixed(2)),
+        totalBookings,
+        avgStay: parseFloat(avgStay.toFixed(1)),
+        avgLeadDays: parseFloat(avgLeadDays.toFixed(0)),
+        cancellations: cancel.cancelled || 0,
+        declines: cancel.declined || 0,
+        totalRequests: cancel.total || 0,
+      },
+      monthly: monthlyRes.rows,
+      sources: sourceRes.rows,
+      properties: propPerfRes.rows,
+    });
+  } catch (err: any) {
+    console.error("[Analytics] error:", err);
+    return res.status(500).json({ error: "Failed to load analytics" });
+  }
+});
+
+// ── GET /:id — Property detail ──────────────────────────────────
 router.get("/:id", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
   try {
     const userRole = req.session.userRole;
@@ -582,8 +834,8 @@ router.get("/:id", requirePmPermission("properties.view"), async (req: Request, 
       acquisitionDetails: acquisitionRows[0] || null,
       paymentSchedules,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -697,8 +949,8 @@ router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request
       .limit(1);
 
     return res.json(updated);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -741,8 +993,8 @@ router.delete("/:id", async (req: Request, res: Response) => {
     });
 
     return res.json({ message: "Property deleted successfully" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -834,8 +1086,8 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
       .where(eq(stProperties.id, id));
 
     return res.json({ message: "Property published successfully" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -872,8 +1124,8 @@ router.post("/:id/unpublish", async (req: Request, res: Response) => {
       .where(eq(stProperties.id, id));
 
     return res.json({ message: "Property unpublished successfully" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -924,8 +1176,8 @@ router.post("/:id/photos", async (req: Request, res: Response) => {
     await logPropertyActivity(id, req.session.userId!, "photo_added", "Photo added", { photoId: photo.id });
 
     return res.status(201).json(photo);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -947,8 +1199,8 @@ router.patch("/:id/photos/reorder", async (req: Request, res: Response) => {
     }
 
     return res.json({ message: "Photos reordered" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -978,8 +1230,8 @@ router.patch("/:id/photos/:photoId", async (req: Request, res: Response) => {
       .returning();
 
     return res.json(updated);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1019,8 +1271,8 @@ router.delete("/:id/photos/:photoId", async (req: Request, res: Response) => {
     await logPropertyActivity(id, req.session.userId!, "photo_removed", "Photo removed", { photoId });
 
     return res.json({ message: "Photo deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1058,8 +1310,8 @@ router.put("/:id/amenities", async (req: Request, res: Response) => {
     await db.update(stProperties).set({ updatedAt: new Date() }).where(eq(stProperties.id, id));
 
     return res.json({ message: "Amenities updated", count: amenities.length });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1094,8 +1346,8 @@ router.post("/:id/policies", async (req: Request, res: Response) => {
     await db.update(stProperties).set({ updatedAt: new Date() }).where(eq(stProperties.id, id));
 
     return res.status(201).json(policy);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1118,8 +1370,8 @@ router.patch("/:id/policies/:policyId", async (req: Request, res: Response) => {
       .returning();
 
     return res.json(updated);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1135,8 +1387,8 @@ router.delete("/:id/policies/:policyId", async (req: Request, res: Response) => 
       .where(and(eq(stPropertyPolicies.id, policyId), eq(stPropertyPolicies.propertyId, id)));
 
     return res.json({ message: "Policy deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1158,8 +1410,8 @@ router.patch("/:id/policies-reorder", async (req: Request, res: Response) => {
     }
 
     return res.json({ message: "Policies reordered" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1209,8 +1461,8 @@ router.patch("/:id/acquisition", async (req: Request, res: Response) => {
       .limit(1);
 
     return res.json(updated);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1242,8 +1494,8 @@ router.post("/:id/documents", async (req: Request, res: Response) => {
     await logPropertyActivity(id, req.session.userId!, "document_added", `Document added: ${documentType}`, { documentType, docId: doc.id });
 
     return res.status(201).json(doc);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1261,8 +1513,8 @@ router.delete("/:id/documents/:docId", async (req: Request, res: Response) => {
     await logPropertyActivity(id, req.session.userId!, "document_removed", "Document removed", { docId });
 
     return res.json({ message: "Document deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1292,15 +1544,15 @@ router.get("/:id/activity", async (req: Request, res: Response) => {
       SELECT a.id, a.action, a.description, a.metadata, a.created_at AS "createdAt",
         g.full_name AS "userName"
       FROM st_property_activity_log a
-      LEFT JOIN guests g ON g.user_id = a.user_id
+      LEFT JOIN users g ON g.id = a.user_id
       WHERE a.property_id = ${id}
       ORDER BY a.created_at DESC
       LIMIT 100
     `);
 
     return res.json(result.rows || []);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1338,8 +1590,8 @@ router.get("/:id/expenses", async (req: Request, res: Response) => {
     const expenses = expResult.rows || [];
 
     return res.json(expenses);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1472,8 +1724,8 @@ router.get("/:id/investment-summary", requirePmPermission("financials.view"), as
       depositsHeld: parseFloat(deposits.currentlyHeld || "0").toFixed(2),
       depositsForfeited: parseFloat(deposits.totalForfeited || "0").toFixed(2),
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1529,7 +1781,28 @@ router.get("/:id/transactions", requirePmPermission("financials.view"), async (r
       });
     }
 
-    // 3. Booking income, security deposits, commissions
+    // 3. Inventory purchases
+    const invResult = await db.execute(sql`
+      SELECT id, name, category, quantity, unit_cost, purchase_date, created_at
+      FROM st_property_inventory
+      WHERE property_id = ${id}
+      ORDER BY COALESCE(purchase_date::text, created_at::text) ASC
+    `);
+    for (const item of invResult.rows as any[]) {
+      const totalCost = (parseFloat(item.unit_cost || "0") * (item.quantity || 1)).toFixed(2);
+      const dateVal = item.purchase_date || item.created_at;
+      transactions.push({
+        id: `inv-${item.id}`,
+        date: dateVal,
+        type: "inventory",
+        category: "Inventory",
+        description: `${item.name}${item.quantity > 1 ? ` × ${item.quantity}` : ""} (${item.category})`,
+        amount: `-${totalCost}`,
+        direction: "out",
+      });
+    }
+
+    // 4. Booking income, security deposits, commissions
     const bookingResult = await db.execute(sql`
       SELECT b.id, b.status, b.check_in_date, b.check_out_date, b.created_at,
         b.subtotal, b.cleaning_fee, b.tourism_tax, b.vat,
@@ -1538,7 +1811,7 @@ router.get("/:id/transactions", requirePmPermission("financials.view"), async (r
         g.full_name AS "guestName",
         b.guest_name AS "manualGuestName"
       FROM st_bookings b
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE b.property_id = ${id}
         AND b.status IN ('confirmed', 'checked_in', 'checked_out', 'completed')
       ORDER BY b.created_at ASC
@@ -1599,7 +1872,7 @@ router.get("/:id/transactions", requirePmPermission("financials.view"), async (r
         b.id AS "bookingId", g.full_name AS "guestName", b.guest_name AS "manualGuestName"
       FROM st_security_deposits sd
       JOIN st_bookings b ON b.id = sd.booking_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE b.property_id = ${id}
         AND sd.status IN ('returned', 'partially_returned', 'forfeited')
     `);
@@ -1634,8 +1907,8 @@ router.get("/:id/transactions", requirePmPermission("financials.view"), async (r
     transactions.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return res.json(transactions);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1657,8 +1930,8 @@ router.get("/:id/inventory", requirePmPermission("properties.view"), async (req:
       ORDER BY category, name
     `);
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1700,8 +1973,8 @@ router.get("/:id/inventory-summary", requirePmPermission("properties.view"), asy
       categoryBreakdown: categories.rows,
       conditionBreakdown: conditions.rows,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1725,8 +1998,8 @@ router.post("/:id/inventory", requirePmPermission("properties.edit"), async (req
     await logPropertyActivity(id, userId, "property_updated", `Inventory item added: ${name}`, { itemId, category, quantity, unitCost });
 
     return res.status(201).json({ id: itemId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1750,8 +2023,8 @@ router.patch("/:id/inventory/:itemId", requirePmPermission("properties.edit"), a
 
     await db.execute(sql.raw(`UPDATE st_property_inventory SET ${sets.join(", ")} WHERE id = '${itemId}' AND property_id = '${id}'`));
     return res.json({ message: "Item updated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1765,8 +2038,8 @@ router.delete("/:id/inventory/:itemId", requirePmPermission("properties.edit"), 
     await db.execute(sql`DELETE FROM st_property_inventory WHERE id = ${itemId} AND property_id = ${id}`);
     await logPropertyActivity(id, req.session.userId!, "property_updated", "Inventory item removed", { itemId });
     return res.json({ message: "Item deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1797,7 +2070,7 @@ router.get("/:id/calendar-pricing", requirePmPermission("properties.view"), asyn
         COALESCE(g.full_name, b.guest_name, 'Guest') AS "guestName",
         b.source
       FROM st_bookings b
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE b.property_id = ${id}
         AND b.check_out_date >= ${startDate}
         AND b.check_in_date <= ${endDate}
@@ -1830,8 +2103,8 @@ router.get("/:id/calendar-pricing", requirePmPermission("properties.view"), asyn
       blocked: blocked.rows,
       pricing: pricing.rows,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1853,7 +2126,7 @@ router.put("/:id/pricing", requirePmPermission("properties.edit"), async (req: R
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().slice(0, 10);
       const dayOfWeek = d.getDay();
-      const isWeekend = dayOfWeek === 5 || dayOfWeek === 6; // Fri, Sat
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6; // Sat, Sun
 
       let dayPrice = price;
       if (weekdayPrice && weekendPrice) {
@@ -1877,8 +2150,8 @@ router.put("/:id/pricing", requirePmPermission("properties.edit"), async (req: R
     await logPropertyActivity(id, req.session.userId!, "property_updated", `Bulk pricing set: ${count} days (${startDate} to ${endDate})`, { startDate, endDate, price, weekdayPrice, weekendPrice });
 
     return res.json({ message: `Updated pricing for ${count} days` });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1898,8 +2171,8 @@ router.delete("/:id/pricing", requirePmPermission("properties.edit"), async (req
     `);
 
     return res.json({ message: "Pricing reset to defaults" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1920,8 +2193,8 @@ router.patch("/:id/pricing/:date", requirePmPermission("properties.edit"), async
     `);
 
     return res.json({ message: "Price updated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1979,8 +2252,8 @@ router.post("/:id/expenses", async (req: Request, res: Response) => {
     }
 
     return res.status(201).json(expense);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2022,8 +2295,8 @@ router.patch("/:id/expenses/:expenseId", async (req: Request, res: Response) => 
     await logPropertyActivity(id, userId, "expense_updated", `Expense updated`, { expenseId, category, amount });
 
     return res.json(updated);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2047,8 +2320,8 @@ router.delete("/:id/expenses/:expenseId", async (req: Request, res: Response) =>
     await logPropertyActivity(id, userId, "expense_deleted", "Expense deleted", { expenseId });
 
     return res.json({ message: "Expense deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2068,8 +2341,8 @@ router.get("/:id/locks", requirePmPermission("properties.view"), async (req: Req
       ORDER BY l.created_at DESC
     `);
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2091,8 +2364,8 @@ router.post("/:id/locks", requirePmPermission("properties.edit"), async (req: Re
 
     await logPropertyActivity(id, req.session.userId!, "property_updated", `Smart lock added: ${name}`, { lockId });
     return res.status(201).json({ id: lockId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2112,8 +2385,8 @@ router.patch("/:id/locks/:lockId", requirePmPermission("properties.edit"), async
 
     await db.execute(sql.raw(`UPDATE st_property_locks SET ${sets.join(", ")} WHERE id = '${lockId}' AND property_id = '${id}'`));
     return res.json({ message: "Lock updated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2123,8 +2396,8 @@ router.delete("/:id/locks/:lockId", requirePmPermission("properties.edit"), asyn
     const { id, lockId } = req.params;
     await db.execute(sql`DELETE FROM st_property_locks WHERE id = ${lockId} AND property_id = ${id}`);
     return res.json({ message: "Lock deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2172,8 +2445,8 @@ router.post("/:id/locks/:lockId/generate-pin", requirePmPermission("bookings.man
     await logPropertyActivity(id, userId, "pin_generated", `Access PIN generated for booking`, { bookingId, lockId, pin });
 
     return res.status(201).json({ id: pinId, pin, validFrom, validUntil });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2183,8 +2456,8 @@ router.patch("/:id/locks/:lockId/pins/:pinId/deactivate", requirePmPermission("b
     const { pinId } = req.params;
     await db.execute(sql`UPDATE st_lock_pins SET status = 'deactivated', deactivated_at = NOW() WHERE id = ${pinId}`);
     return res.json({ message: "PIN deactivated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2201,14 +2474,14 @@ router.get("/:id/lock-pins", requirePmPermission("properties.view"), async (req:
       FROM st_lock_pins p
       JOIN st_property_locks l ON l.id = p.lock_id
       LEFT JOIN st_bookings b ON b.id = p.booking_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE l.property_id = ${id}
       ORDER BY p.created_at DESC
       LIMIT 50
     `);
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

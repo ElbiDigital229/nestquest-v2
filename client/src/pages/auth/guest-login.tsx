@@ -210,11 +210,13 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
                 }}
               >
                 <option value="">Select a test account...</option>
-                <option value="pm@nestquest.com|Password1!|PROPERTY_MANAGER">PM — Ahmed Al Maktoum</option>
-                <option value="owner@nestquest.com|Password1!|PROPERTY_OWNER">PO — Fatima Al Nahyan</option>
-                <option value="guest@nestquest.com|Password1!|GUEST">Guest — James Wilson</option>
-                <option value="maria@guest.com|Password1!|GUEST">Guest — Maria Santos</option>
-                <option value="cleaner@nestquest.com|Password1!|PROPERTY_MANAGER">Cleaner — Ravi Kumar</option>
+                <option value="pm@nestquest.com|Test1234!|PROPERTY_MANAGER">PM — Ahmed Al Maktoum</option>
+                <option value="sarah@nestquest.com|Test1234!|PROPERTY_MANAGER">PM — Sarah Al Rashidi</option>
+                <option value="owner@nestquest.com|Test1234!|PROPERTY_OWNER">PO — Fatima Al Nahyan</option>
+                <option value="guest@nestquest.com|Test1234!|GUEST">Guest — James Wilson</option>
+                <option value="maria@guest.com|Test1234!|GUEST">Guest — Maria Santos</option>
+                <option value="lena@guest.com|Test1234!|GUEST">Guest — Lena Hoffmann</option>
+                <option value="cleaner@nestquest.com|Test1234!|CLEANER">Cleaner — Ravi Kumar</option>
               </select>
             </div>
           )}

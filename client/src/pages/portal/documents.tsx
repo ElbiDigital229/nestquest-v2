@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useFilters } from "@/hooks/use-filters";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -124,11 +125,6 @@ function ExpiryBadge({ dateStr }: { dateStr: string | null }) {
 }
 
 export default function DocumentsPage() {
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [expiryFilter, setExpiryFilter] = useState("all");
-
   const { data, isLoading } = useQuery<DocumentsResponse>({
     queryKey: ["/st-properties/documents"],
     queryFn: () => api.get("/st-properties/documents"),
@@ -139,36 +135,19 @@ export default function DocumentsPage() {
     return [...data.propertyDocuments, ...data.userDocuments];
   }, [data]);
 
-  const filteredDocs = useMemo(() => {
-    return allDocs.filter((doc) => {
-      // Search
-      if (search) {
-        const term = search.toLowerCase();
-        const matchName = doc.name?.toLowerCase().includes(term);
-        const matchType = (DOC_TYPE_LABELS[doc.documentType] || doc.documentType).toLowerCase().includes(term);
-        const matchUser = doc.userName?.toLowerCase().includes(term);
-        const matchProperty = doc.propertyName?.toLowerCase().includes(term);
-        const matchBuilding = doc.buildingName?.toLowerCase().includes(term);
-        if (!matchName && !matchType && !matchUser && !matchProperty && !matchBuilding) return false;
-      }
-
-      // Source
-      if (sourceFilter !== "all" && doc.source !== sourceFilter) return false;
-
-      // Type
-      if (typeFilter !== "all" && doc.documentType !== typeFilter) return false;
-
-      // Expiry
-      if (expiryFilter !== "all") {
+  const { search, setSearch, filters, setFilter, filtered: filteredDocs } = useFilters(allDocs, {
+    searchFields: ["name", "documentType", "userName", "propertyName", "buildingName"],
+    filterFields: { source: "all", documentType: "all", expiry: "all" },
+    customFilter: (doc, filters) => {
+      if (filters.expiry !== "all") {
         const days = daysUntil(doc.expiryDate);
-        if (expiryFilter === "expired" && (days === null || days > 0)) return false;
-        if (expiryFilter === "30" && (days === null || days <= 0 || days > 30)) return false;
-        if (expiryFilter === "90" && (days === null || days <= 0 || days > 90)) return false;
+        if (filters.expiry === "expired" && (days === null || days > 0)) return false;
+        if (filters.expiry === "30" && (days === null || days <= 0 || days > 30)) return false;
+        if (filters.expiry === "90" && (days === null || days <= 0 || days > 90)) return false;
       }
-
       return true;
-    });
-  }, [allDocs, search, sourceFilter, typeFilter, expiryFilter]);
+    },
+  });
 
   // Stats
   const stats = useMemo(() => {
@@ -280,7 +259,7 @@ export default function DocumentsPage() {
               />
             </div>
 
-            <Select value={sourceFilter} onValueChange={setSourceFilter}>
+            <Select value={filters.source} onValueChange={(v) => setFilter("source", v)}>
               <SelectTrigger className="w-44">
                 <SelectValue placeholder="Source" />
               </SelectTrigger>
@@ -291,7 +270,7 @@ export default function DocumentsPage() {
               </SelectContent>
             </Select>
 
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <Select value={filters.documentType} onValueChange={(v) => setFilter("documentType", v)}>
               <SelectTrigger className="w-48">
                 <SelectValue placeholder="Document type" />
               </SelectTrigger>
@@ -305,7 +284,7 @@ export default function DocumentsPage() {
               </SelectContent>
             </Select>
 
-            <Select value={expiryFilter} onValueChange={setExpiryFilter}>
+            <Select value={filters.expiry} onValueChange={(v) => setFilter("expiry", v)}>
               <SelectTrigger className="w-40">
                 <SelectValue placeholder="Expiry" />
               </SelectTrigger>

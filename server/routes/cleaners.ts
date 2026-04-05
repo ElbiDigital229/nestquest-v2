@@ -56,8 +56,8 @@ router.get("/", requirePmPermission("cleaners.manage"), async (req: Request, res
     `);
 
     return res.json(allCleaners.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -96,8 +96,8 @@ router.post("/", requirePmPermission("cleaners.manage"), async (req: Request, re
     `);
 
     return res.status(201).json({ id: cleaner.id, email: cleaner.email, fullName });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -109,8 +109,8 @@ router.patch("/:id/status", requirePmPermission("cleaners.manage"), async (req: 
     if (!["active", "suspended"].includes(status)) return res.status(400).json({ error: "Status must be active or suspended" });
     await db.execute(sql`UPDATE users SET status = ${status}, updated_at = NOW() WHERE id = ${id} AND role = 'CLEANER'`);
     return res.json({ message: `Cleaner ${status === "active" ? "activated" : "deactivated"}` });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -132,8 +132,8 @@ router.get("/checklists", requirePmPermission("cleaners.manage"), async (req: Re
       ORDER BY c.created_at DESC
     `);
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -160,8 +160,8 @@ router.post("/checklists", requirePmPermission("cleaners.manage"), async (req: R
     }
 
     return res.status(201).json({ id: checklistId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -184,8 +184,8 @@ router.get("/checklists/:id", requirePmPermission("cleaners.manage"), async (req
     `);
 
     return res.json({ ...checklist.rows[0], items: items.rows });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -194,8 +194,8 @@ router.delete("/checklists/:id", requirePmPermission("cleaners.manage"), async (
   try {
     await db.execute(sql`DELETE FROM cleaning_checklists WHERE id = ${req.params.id}`);
     return res.json({ message: "Checklist deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -240,8 +240,8 @@ router.get("/tasks", async (req: Request, res: Response) => {
     `);
 
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -302,8 +302,8 @@ router.post("/tasks", requirePmPermission("cleaners.manage"), async (req: Reques
     });
 
     return res.status(201).json({ id: taskId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -339,8 +339,8 @@ router.get("/tasks/:id", async (req: Request, res: Response) => {
     `);
 
     return res.json({ ...t, items: items.rows });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -352,19 +352,48 @@ router.get("/tasks/:id", async (req: Request, res: Response) => {
 router.patch("/tasks/:taskId/items/:itemId", async (req: Request, res: Response) => {
   try {
     const { taskId, itemId } = req.params;
+    const { userId, userRole } = req.session;
     const { isChecked, notes, imageUrl } = req.body;
 
-    const updates: string[] = [];
-    if (isChecked !== undefined) {
-      updates.push(`is_checked = ${isChecked}`);
-      updates.push(isChecked ? `checked_at = NOW()` : `checked_at = NULL`);
+    // Verify cleaner owns this task
+    if (userRole === "CLEANER") {
+      const ownership = await db.execute(sql`
+        SELECT 1 FROM cleaning_tasks WHERE id = ${taskId} AND cleaner_user_id = ${userId!} LIMIT 1
+      `);
+      if (ownership.rows.length === 0) return res.status(403).json({ error: "Access denied" });
     }
-    if (notes !== undefined) updates.push(`notes = '${notes.replace(/'/g, "''")}'`);
-    if (imageUrl !== undefined) updates.push(`image_url = '${imageUrl}'`);
 
-    if (updates.length === 0) return res.status(400).json({ error: "Nothing to update" });
+    if (isChecked === undefined && notes === undefined && imageUrl === undefined) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
 
-    await db.execute(sql.raw(`UPDATE cleaning_task_items SET ${updates.join(", ")} WHERE id = '${itemId}' AND task_id = '${taskId}'`));
+    // Build update with parameterized queries only
+    if (isChecked !== undefined) {
+      const checkedBool = Boolean(isChecked);
+      if (checkedBool) {
+        await db.execute(sql`
+          UPDATE cleaning_task_items SET is_checked = true, checked_at = NOW()
+          WHERE id = ${itemId} AND task_id = ${taskId}
+        `);
+      } else {
+        await db.execute(sql`
+          UPDATE cleaning_task_items SET is_checked = false, checked_at = NULL
+          WHERE id = ${itemId} AND task_id = ${taskId}
+        `);
+      }
+    }
+    if (notes !== undefined) {
+      await db.execute(sql`
+        UPDATE cleaning_task_items SET notes = ${String(notes)}
+        WHERE id = ${itemId} AND task_id = ${taskId}
+      `);
+    }
+    if (imageUrl !== undefined) {
+      await db.execute(sql`
+        UPDATE cleaning_task_items SET image_url = ${String(imageUrl)}
+        WHERE id = ${itemId} AND task_id = ${taskId}
+      `);
+    }
 
     // Auto-start task if first item checked
     if (isChecked) {
@@ -375,8 +404,8 @@ router.patch("/tasks/:taskId/items/:itemId", async (req: Request, res: Response)
     }
 
     return res.json({ message: "Item updated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Failed to update item" });
   }
 });
 
@@ -384,8 +413,16 @@ router.patch("/tasks/:taskId/items/:itemId", async (req: Request, res: Response)
 router.patch("/tasks/:id/complete", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const userId = req.session.userId!;
+    const { userId, userRole } = req.session;
     const { notes } = req.body;
+
+    // Verify cleaner is assigned to this task
+    if (userRole === "CLEANER") {
+      const ownership = await db.execute(sql`
+        SELECT 1 FROM cleaning_tasks WHERE id = ${id} AND cleaner_user_id = ${userId!} AND status != 'completed' LIMIT 1
+      `);
+      if (ownership.rows.length === 0) return res.status(403).json({ error: "Access denied" });
+    }
 
     await db.execute(sql`
       UPDATE cleaning_tasks SET status = 'completed', completed_at = NOW(), notes = ${notes || null}, updated_at = NOW()
@@ -406,8 +443,8 @@ router.patch("/tasks/:id/complete", async (req: Request, res: Response) => {
     }
 
     return res.json({ status: "completed" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Failed to complete task" });
   }
 });
 
@@ -432,8 +469,8 @@ router.get("/automation-rules", requirePmPermission("cleaners.manage"), async (r
       ORDER BY r.created_at DESC
     `);
     return res.json(result.rows);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -452,8 +489,8 @@ router.post("/automation-rules", requirePmPermission("cleaners.manage"), async (
     `);
 
     return res.status(201).json({ id: ruleId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -464,8 +501,8 @@ router.patch("/automation-rules/:id", requirePmPermission("cleaners.manage"), as
     const { isActive } = req.body;
     await db.execute(sql`UPDATE cleaning_automation_rules SET is_active = ${isActive}, updated_at = NOW() WHERE id = ${id}`);
     return res.json({ message: "Rule updated" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -474,8 +511,8 @@ router.delete("/automation-rules/:id", requirePmPermission("cleaners.manage"), a
   try {
     await db.execute(sql`DELETE FROM cleaning_automation_rules WHERE id = ${req.params.id}`);
     return res.json({ message: "Rule deleted" });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -500,13 +537,17 @@ export async function triggerCleaningAutomation(propertyId: string, pmUserId: st
       const dueAt = new Date(Date.now() + rule.delay_minutes * 60 * 1000);
       const taskId = crypto.randomUUID();
 
-      // Find first available cleaner (most recent one assigned to this PM's tasks)
+      // Find cleaner: prefer one already used by this PM, fallback to any CLEANER role user
       const cleanerResult = await db.execute(sql`
-        SELECT DISTINCT cleaner_user_id FROM cleaning_tasks
+        SELECT cleaner_user_id FROM cleaning_tasks
         WHERE pm_user_id = ${pmUserId} AND cleaner_user_id IS NOT NULL
-        ORDER BY cleaner_user_id LIMIT 1
+        ORDER BY created_at DESC LIMIT 1
       `);
-      const cleanerUserId = (cleanerResult.rows[0] as any)?.cleaner_user_id || null;
+      let cleanerUserId = (cleanerResult.rows[0] as any)?.cleaner_user_id || null;
+      if (!cleanerUserId) {
+        const fallback = await db.execute(sql`SELECT id FROM users WHERE role = 'CLEANER' LIMIT 1`);
+        cleanerUserId = (fallback.rows[0] as any)?.id || null;
+      }
 
       await db.execute(sql`
         INSERT INTO cleaning_tasks (id, property_id, pm_user_id, cleaner_user_id, checklist_id, booking_id, title, due_at, status, created_by)

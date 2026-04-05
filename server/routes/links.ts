@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { pmPoLinks, users, guests, userAuditLog } from "../../shared/schema";
+import { pmPoLinks, users, userAuditLog } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
@@ -100,13 +100,13 @@ router.post("/invite", async (req: Request, res: Response) => {
     }
 
     // Get PM's name for notification
-    const [pmGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, userId!))
+    const [pmUser] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, userId!))
       .limit(1);
 
-    const pmName = pmGuest?.fullName || "A Property Manager";
+    const pmName = pmUser?.fullName || "A Property Manager";
 
     // Create the link
     const [link] = await db
@@ -120,12 +120,12 @@ router.post("/invite", async (req: Request, res: Response) => {
       .returning();
 
     // Get target name for audit
-    const [targetGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, targetUser.id))
+    const [targetUserProfile] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, targetUser.id))
       .limit(1);
-    const targetName = targetGuest?.fullName || targetUser.email;
+    const targetName = targetUserProfile?.fullName || targetUser.email;
 
     // Notify target user
     await createNotification({
@@ -171,12 +171,11 @@ router.get("/", async (req: Request, res: Response) => {
           l.status,
           l.created_at AS "createdAt",
           l.updated_at AS "updatedAt",
-          g.full_name AS "targetName",
+          u.full_name AS "targetName",
           u.email AS "targetEmail",
           u.phone AS "targetPhone"
         FROM pm_po_links l
         JOIN users u ON u.id = l.target_user_id
-        LEFT JOIN guests g ON g.user_id = l.target_user_id
         WHERE l.pm_user_id = ${userId!}
         ${statusFilter ? sql`AND l.status = ${statusFilter}` : sql``}
         ${targetRoleFilter ? sql`AND l.target_role = ${targetRoleFilter}` : sql``}
@@ -195,12 +194,11 @@ router.get("/", async (req: Request, res: Response) => {
           l.status,
           l.created_at AS "createdAt",
           l.updated_at AS "updatedAt",
-          g.full_name AS "pmName",
+          u.full_name AS "pmName",
           u.email AS "pmEmail",
           u.phone AS "pmPhone"
         FROM pm_po_links l
         JOIN users u ON u.id = l.pm_user_id
-        LEFT JOIN guests g ON g.user_id = l.pm_user_id
         WHERE l.target_user_id = ${userId!}
         ${statusFilter ? sql`AND l.status = ${statusFilter}` : sql``}
         ORDER BY l.created_at DESC
@@ -244,13 +242,12 @@ router.get("/:linkId/details", async (req: Request, res: Response) => {
     const rows = await db.execute(sql`
       SELECT
         u.id,
-        g.full_name AS "fullName",
+        u.full_name AS "fullName",
         u.email,
         u.phone,
         u.created_at AS "createdAt",
         0 AS "propertiesManaged"
       FROM users u
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE u.id = ${link.pmUserId}
     `);
 
@@ -296,20 +293,20 @@ router.patch("/:linkId/respond", async (req: Request, res: Response) => {
     }
 
     // Get responder's name
-    const [responderGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, userId!))
+    const [responderUser] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, userId!))
       .limit(1);
-    const responderName = responderGuest?.fullName || "User";
+    const responderName = responderUser?.fullName || "User";
 
     // Get PM's name for audit
-    const [pmGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, link.pmUserId))
+    const [pmUser2] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, link.pmUserId))
       .limit(1);
-    const pmName = pmGuest?.fullName || "Property Manager";
+    const pmName = pmUser2?.fullName || "Property Manager";
 
     if (action === "accept") {
       await db
@@ -387,21 +384,21 @@ router.delete("/:linkId", async (req: Request, res: Response) => {
     }
 
     // Get both parties' names
-    const [unlinkerGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, userId!))
+    const [unlinkerUser] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, userId!))
       .limit(1);
-    const unlinkerName = unlinkerGuest?.fullName || "A user";
+    const unlinkerName = unlinkerUser?.fullName || "A user";
 
     const otherUserId = isPm ? link.targetUserId : link.pmUserId;
 
-    const [otherGuest] = await db
-      .select({ fullName: guests.fullName })
-      .from(guests)
-      .where(eq(guests.userId, otherUserId))
+    const [otherUser] = await db
+      .select({ fullName: users.fullName })
+      .from(users)
+      .where(eq(users.id, otherUserId))
       .limit(1);
-    const otherName = otherGuest?.fullName || "User";
+    const otherName = otherUser?.fullName || "User";
 
     await db.delete(pmPoLinks).where(eq(pmPoLinks.id, link.id));
 
@@ -462,27 +459,26 @@ router.get("/:linkId/full-profile", async (req: Request, res: Response) => {
         u.role,
         u.status AS "accountStatus",
         u.created_at AS "createdAt",
-        g.full_name AS "fullName",
-        g.dob,
-        g.nationality,
-        g.country_of_residence AS "countryOfResidence",
-        g.resident_address AS "residentAddress",
-        g.emirates_id_number AS "emiratesIdNumber",
-        g.emirates_id_expiry AS "emiratesIdExpiry",
-        g.emirates_id_front_url AS "emiratesIdFrontUrl",
-        g.emirates_id_back_url AS "emiratesIdBackUrl",
-        g.passport_number AS "passportNumber",
-        g.passport_expiry AS "passportExpiry",
-        g.passport_front_url AS "passportFrontUrl",
-        g.trade_license_expiry AS "tradeLicenseExpiry",
-        g.trade_license_url AS "tradeLicenseUrl",
-        g.company_name AS "companyName",
-        g.company_website AS "companyWebsite",
-        g.company_description AS "companyDescription",
-        g.company_address AS "companyAddress",
-        g.kyc_status AS "kycStatus"
+        u.full_name AS "fullName",
+        u.dob,
+        u.nationality,
+        u.country_of_residence AS "countryOfResidence",
+        u.resident_address AS "residentAddress",
+        u.emirates_id_number AS "emiratesIdNumber",
+        u.emirates_id_expiry AS "emiratesIdExpiry",
+        u.emirates_id_front_url AS "emiratesIdFrontUrl",
+        u.emirates_id_back_url AS "emiratesIdBackUrl",
+        u.passport_number AS "passportNumber",
+        u.passport_expiry AS "passportExpiry",
+        u.passport_front_url AS "passportFrontUrl",
+        u.trade_license_expiry AS "tradeLicenseExpiry",
+        u.trade_license_url AS "tradeLicenseUrl",
+        u.company_name AS "companyName",
+        u.company_website AS "companyWebsite",
+        u.company_description AS "companyDescription",
+        u.company_address AS "companyAddress",
+        u.kyc_status AS "kycStatus"
       FROM users u
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE u.id = ${link.targetUserId}
     `);
 
@@ -529,13 +525,12 @@ router.get("/user/:userId", async (req: Request, res: Response) => {
           l.status,
           l.created_at AS "linkedAt",
           l.updated_at AS "updatedAt",
-          g.full_name AS "fullName",
+          u.full_name AS "fullName",
           u.email,
           u.phone,
-          g.id AS "guestId"
+          u.id AS "guestId"
         FROM pm_po_links l
         JOIN users u ON u.id = l.target_user_id
-        LEFT JOIN guests g ON g.user_id = l.target_user_id
         WHERE l.pm_user_id = ${targetUserId}
         ORDER BY l.created_at DESC
       `);
@@ -550,13 +545,12 @@ router.get("/user/:userId", async (req: Request, res: Response) => {
           l.status,
           l.created_at AS "linkedAt",
           l.updated_at AS "updatedAt",
-          g.full_name AS "fullName",
+          u.full_name AS "fullName",
           u.email,
           u.phone,
-          g.id AS "guestId"
+          u.id AS "guestId"
         FROM pm_po_links l
         JOIN users u ON u.id = l.pm_user_id
-        LEFT JOIN guests g ON g.user_id = l.pm_user_id
         WHERE l.target_user_id = ${targetUserId}
         ORDER BY l.created_at DESC
       `);

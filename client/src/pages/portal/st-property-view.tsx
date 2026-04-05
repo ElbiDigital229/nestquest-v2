@@ -156,7 +156,6 @@ const TABS = [
   { key: "policies", name: "Policies", icon: ShieldCheck },
   { key: "owner", name: "Property Owner", icon: Users },
   { key: "agreement", name: "Agreement", icon: ClipboardCheck },
-  { key: "locks", name: "Smart Locks", icon: Key },
   { key: "inventory", name: "Inventory", icon: Package },
   { key: "investment", name: "Investment", icon: TrendingUp },
   { key: "calendar", name: "Calendar & Pricing", icon: CalendarDays },
@@ -254,10 +253,24 @@ function parsePaymentMethods(raw: any): string[] {
 
 export default function StPropertyView({ id: propId }: { id?: string } = {}) {
   const [match, params] = useRoute("/portal/st-properties/:id");
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const id = propId || params?.id;
 
-  const [activeTab, setActiveTab] = useState<TabKey>("details");
+  const initialTab = (() => {
+    try {
+      const search = window.location.search;
+      const tab = new URLSearchParams(search).get("tab");
+      const valid = TABS.map(t => t.key);
+      return (tab && valid.includes(tab as TabKey) ? tab : "details") as TabKey;
+    } catch { return "details" as TabKey; }
+  })();
+
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  const handleTabChange = (tab: TabKey) => {
+    setActiveTab(tab);
+    navigate(`/portal/st-properties/${id}?tab=${tab}`, { replace: true });
+  };
 
   const { data: property, isLoading, isError } = useQuery<StPropertyData>({
     queryKey: ["/st-properties", id],
@@ -324,7 +337,7 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
               return (
                 <button
                   key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
+                  onClick={() => handleTabChange(tab.key)}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left",
                     isCurrent
@@ -350,7 +363,7 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
           {activeTab === "policies" && <ViewPolicies property={property} />}
           {activeTab === "owner" && <ViewOwner property={property} />}
           {activeTab === "agreement" && <ViewAgreement property={property} />}
-          {activeTab === "locks" && <ViewLocks property={property} />}
+
           {activeTab === "inventory" && <ViewInventory property={property} />}
           {activeTab === "investment" && <ViewInvestment property={property} />}
           {activeTab === "calendar" && <ViewCalendarPricing property={property} />}
@@ -1758,6 +1771,7 @@ const TX_TYPE_STYLES: Record<string, { badge: string; icon: string }> = {
   security_deposit_out: { badge: "bg-teal-100 text-teal-800", icon: "text-teal-600" },
   security_deposit_forfeited: { badge: "bg-red-100 text-red-800", icon: "text-red-600" },
   commission: { badge: "bg-purple-100 text-purple-800", icon: "text-purple-600" },
+  inventory: { badge: "bg-indigo-100 text-indigo-800", icon: "text-indigo-600" },
 };
 
 function TransactionHistory({ propertyId }: { propertyId: string }) {
@@ -1991,6 +2005,13 @@ function ViewBookings({ property }: { property: StPropertyData }) {
   const [depositBookingId, setDepositBookingId] = useState<string | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const [detailBooking, setDetailBooking] = useState<any>(null);
+  const [detailBookingId, setDetailBookingId] = useState<string | null>(null);
+
+  const { data: fullDetailBooking } = useQuery<any>({
+    queryKey: ["/bookings", detailBookingId],
+    queryFn: () => api.get(`/bookings/${detailBookingId}`),
+    enabled: !!detailBookingId && detailDialogOpen,
+  });
 
   // Manual booking form
   const [mbForm, setMbForm] = useState({
@@ -2005,7 +2026,20 @@ function ViewBookings({ property }: { property: StPropertyData }) {
   const [declineReason, setDeclineReason] = useState("");
 
   // Checkout form
-  const [coForm, setCoForm] = useState({ condition: "good", damageNotes: "", damagePhotos: "" });
+  const DEFAULT_CHECKOUT_CHECKLIST = [
+    { label: "Keys / access cards returned", completed: false },
+    { label: "Property condition inspected", completed: false },
+    { label: "Inventory checked — no missing items", completed: false },
+    { label: "Damages documented (if any)", completed: false },
+    { label: "Security deposit assessment done", completed: false },
+    { label: "Guest reminded to leave a review", completed: false },
+  ];
+  const [coForm, setCoForm] = useState({
+    condition: "good",
+    damageNotes: "",
+    damagePhotos: "",
+    checklist: DEFAULT_CHECKOUT_CHECKLIST,
+  });
 
   // Deposit form
   const [depForm, setDepForm] = useState<{ returnType: string; deductions: { reason: string; amount: string }[] }>({
@@ -2051,11 +2085,11 @@ function ViewBookings({ property }: { property: StPropertyData }) {
   });
 
   const checkOutMutation = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; condition: string; damageNotes: string; damagePhotos: string }) =>
+    mutationFn: ({ id, ...body }: { id: string; checklistItems?: any[]; damageAssessment?: any }) =>
       api.patch(`/bookings/${id}/check-out`, body),
     onSuccess: () => {
       invalidate(); setCheckoutDialogOpen(false);
-      setCoForm({ condition: "good", damageNotes: "", damagePhotos: "" });
+      setCoForm({ condition: "good", damageNotes: "", damagePhotos: "", checklist: DEFAULT_CHECKOUT_CHECKLIST });
       toast({ title: "Guest checked out" });
     },
   });
@@ -2229,7 +2263,7 @@ function ViewBookings({ property }: { property: StPropertyData }) {
                       <tr
                         key={b.id}
                         className="hover:bg-muted/30 cursor-pointer transition-colors"
-                        onClick={() => { setDetailBooking(b); setDetailDialogOpen(true); }}
+                        onClick={() => { setDetailBooking(b); setDetailBookingId(b.id); setDetailDialogOpen(true); }}
                       >
                         <td className="px-3 py-2.5">
                           <p className="font-medium truncate max-w-[140px]">{b.guestName || "—"}</p>
@@ -2444,10 +2478,38 @@ function ViewBookings({ property }: { property: StPropertyData }) {
       </Dialog>
 
       {/* ─── Check-out Dialog ─── */}
-      <Dialog open={checkoutDialogOpen} onOpenChange={v => { setCheckoutDialogOpen(v); if (!v) setCoForm({ condition: "good", damageNotes: "", damagePhotos: "" }); }}>
-        <DialogContent className="max-w-sm">
+      <Dialog open={checkoutDialogOpen} onOpenChange={v => { setCheckoutDialogOpen(v); if (!v) setCoForm({ condition: "good", damageNotes: "", damagePhotos: "", checklist: DEFAULT_CHECKOUT_CHECKLIST }); }}>
+        <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Check Out Guest</DialogTitle></DialogHeader>
           <div className="grid gap-4 py-2">
+
+            {/* Checkout Checklist */}
+            <div>
+              <p className="text-sm font-medium mb-2">Checkout Checklist</p>
+              <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
+                {coForm.checklist.map((item, i) => (
+                  <label key={i} className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      checked={item.completed}
+                      onChange={() => setCoForm(f => ({
+                        ...f,
+                        checklist: f.checklist.map((c, j) => j === i ? { ...c, completed: !c.completed } : c),
+                      }))}
+                      className="h-4 w-4 rounded border-gray-300 accent-primary"
+                    />
+                    <span className={item.completed ? "line-through text-muted-foreground" : ""}>{item.label}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {coForm.checklist.filter(c => c.completed).length} / {coForm.checklist.length} completed
+              </p>
+            </div>
+
+            <Separator />
+
+            {/* Condition */}
             <div>
               <Label>Property Condition *</Label>
               <Select value={coForm.condition} onValueChange={v => setCoForm(f => ({ ...f, condition: v }))}>
@@ -2459,20 +2521,20 @@ function ViewBookings({ property }: { property: StPropertyData }) {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label>Damage Notes</Label>
-              <Textarea value={coForm.damageNotes} onChange={e => setCoForm(f => ({ ...f, damageNotes: e.target.value }))} rows={3} />
-            </div>
-            <div>
-              <Label>Damage Photos (URLs, comma-separated)</Label>
-              <Input value={coForm.damagePhotos} onChange={e => setCoForm(f => ({ ...f, damagePhotos: e.target.value }))} />
-            </div>
+
+            {/* Damage notes — shown when condition isn't good */}
+            {coForm.condition !== "good" && (
+              <div>
+                <Label>Damage Notes</Label>
+                <Textarea value={coForm.damageNotes} onChange={e => setCoForm(f => ({ ...f, damageNotes: e.target.value }))} rows={3} placeholder="Describe any damages..." />
+              </div>
+            )}
+
             <Button
               onClick={() => checkoutBookingId && checkOutMutation.mutate({
                 id: checkoutBookingId,
-                condition: coForm.condition,
-                damageNotes: coForm.damageNotes,
-                damagePhotos: coForm.damagePhotos,
+                checklistItems: coForm.checklist,
+                damageAssessment: { condition: coForm.condition, notes: coForm.damageNotes },
               })}
               disabled={checkOutMutation.isPending}
             >
@@ -2549,35 +2611,97 @@ function ViewBookings({ property }: { property: StPropertyData }) {
         <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Booking Details</DialogTitle></DialogHeader>
           {detailBooking && (
-            <div className="grid gap-3 py-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="font-medium">Status</span>
-                <BookingStatusBadge status={detailBooking.status} />
-              </div>
-              {[
-                { label: "Guest Name", value: detailBooking.guestName, icon: Users },
-                { label: "Email", value: detailBooking.guestEmail, icon: Mail },
-                { label: "Check-in", value: detailBooking.checkInDate ? bookingFormatDate(detailBooking.checkInDate) : null, icon: LogIn },
-                { label: "Check-out", value: detailBooking.checkOutDate ? bookingFormatDate(detailBooking.checkOutDate) : null, icon: LogOut },
-                { label: "Nights", value: detailBooking.totalNights, icon: CalendarDays },
-                { label: "Guests", value: detailBooking.numberOfGuests, icon: Users },
-                { label: "Total Amount", value: bookingFormatCurrency(detailBooking.totalAmount), icon: DollarSign },
-                { label: "Payment Method", value: detailBooking.paymentMethod, icon: CreditCard },
-                { label: "Payment Status", value: detailBooking.paymentStatus, icon: CreditCard },
-                { label: "Source", value: detailBooking.source?.replace("_", "."), icon: ExternalLink },
-                { label: "External Ref", value: detailBooking.externalBookingRef, icon: Hash },
-                { label: "Access PIN", value: detailBooking.accessPin, icon: ShieldCheck },
-                { label: "Owner Payout", value: detailBooking.ownerPayoutStatus, icon: Banknote },
-                { label: "Commission", value: bookingFormatCurrency(detailBooking.commissionAmount), icon: Percent },
-                { label: "Created", value: detailBooking.createdAt ? bookingFormatDate(detailBooking.createdAt) : null, icon: Clock },
-              ].filter(r => r.value != null && r.value !== "" && r.value !== "—").map(r => (
-                <div key={r.label} className="flex items-center justify-between py-1 border-b last:border-0">
-                  <span className="text-muted-foreground flex items-center gap-1.5">
-                    <r.icon className="h-3.5 w-3.5" /> {r.label}
-                  </span>
-                  <span className="font-medium capitalize">{r.value}</span>
+            <div className="space-y-5 py-2 text-sm">
+
+              {/* Booking info */}
+              <div className="grid gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">Status</span>
+                  <BookingStatusBadge status={detailBooking.status} />
                 </div>
-              ))}
+                {[
+                  { label: "Guest Name", value: detailBooking.guestName, icon: Users },
+                  { label: "Email", value: detailBooking.guestEmail, icon: Mail },
+                  { label: "Check-in", value: detailBooking.checkInDate ? bookingFormatDate(detailBooking.checkInDate) : null, icon: LogIn },
+                  { label: "Check-out", value: detailBooking.checkOutDate ? bookingFormatDate(detailBooking.checkOutDate) : null, icon: LogOut },
+                  { label: "Nights", value: detailBooking.totalNights, icon: CalendarDays },
+                  { label: "Guests", value: detailBooking.numberOfGuests, icon: Users },
+                  { label: "Total Amount", value: bookingFormatCurrency(detailBooking.totalAmount), icon: DollarSign },
+                  { label: "Payment Method", value: detailBooking.paymentMethod, icon: CreditCard },
+                  { label: "Payment Status", value: detailBooking.paymentStatus, icon: CreditCard },
+                  { label: "Source", value: detailBooking.source?.replace("_", "."), icon: ExternalLink },
+                  { label: "External Ref", value: detailBooking.externalBookingRef, icon: Hash },
+                  { label: "Access PIN", value: detailBooking.accessPin, icon: ShieldCheck },
+                  { label: "Owner Payout", value: detailBooking.ownerPayoutStatus, icon: Banknote },
+                  { label: "Commission", value: bookingFormatCurrency(detailBooking.commissionAmount), icon: Percent },
+                  { label: "Created", value: detailBooking.createdAt ? bookingFormatDate(detailBooking.createdAt) : null, icon: Clock },
+                ].filter(r => r.value != null && r.value !== "" && r.value !== "—").map(r => (
+                  <div key={r.label} className="flex items-center justify-between py-1 border-b last:border-0">
+                    <span className="text-muted-foreground flex items-center gap-1.5">
+                      <r.icon className="h-3.5 w-3.5" /> {r.label}
+                    </span>
+                    <span className="font-medium capitalize">{r.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Guest KYC / Documents */}
+              {fullDetailBooking?.guestProfile && (() => {
+                const gp = fullDetailBooking.guestProfile;
+                return (
+                  <div className="space-y-3 pt-2 border-t">
+                    <p className="font-semibold text-sm">Guest Identity</p>
+                    {[
+                      { label: "Nationality", value: gp.nationality },
+                      { label: "Date of Birth", value: gp.dob },
+                      { label: "Passport No.", value: gp.passportNumber },
+                      { label: "Passport Expiry", value: gp.passportExpiry },
+                      { label: "Emirates ID", value: gp.emiratesIdNumber },
+                      { label: "Emirates ID Expiry", value: gp.emiratesIdExpiry },
+                      { label: "KYC Status", value: gp.kycStatus },
+                    ].filter(r => r.value).map(r => (
+                      <div key={r.label} className="flex items-center justify-between py-1 border-b last:border-0">
+                        <span className="text-muted-foreground">{r.label}</span>
+                        <span className="font-medium capitalize">{r.value}</span>
+                      </div>
+                    ))}
+
+                    {/* Document images */}
+                    {(gp.passportFrontUrl || gp.emiratesIdFrontUrl || gp.emiratesIdBackUrl) && (
+                      <div className="space-y-2 pt-1">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Document Copies</p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {gp.passportFrontUrl && (
+                            <a href={gp.passportFrontUrl} target="_blank" rel="noopener noreferrer" className="group">
+                              <div className="rounded-md border overflow-hidden bg-muted aspect-[3/2]">
+                                <img src={gp.passportFrontUrl} alt="Passport" className="w-full h-full object-cover group-hover:opacity-80 transition-opacity" />
+                              </div>
+                              <p className="text-[10px] text-center text-muted-foreground mt-1">Passport</p>
+                            </a>
+                          )}
+                          {gp.emiratesIdFrontUrl && (
+                            <a href={gp.emiratesIdFrontUrl} target="_blank" rel="noopener noreferrer" className="group">
+                              <div className="rounded-md border overflow-hidden bg-muted aspect-[3/2]">
+                                <img src={gp.emiratesIdFrontUrl} alt="Emirates ID Front" className="w-full h-full object-cover group-hover:opacity-80 transition-opacity" />
+                              </div>
+                              <p className="text-[10px] text-center text-muted-foreground mt-1">EID Front</p>
+                            </a>
+                          )}
+                          {gp.emiratesIdBackUrl && (
+                            <a href={gp.emiratesIdBackUrl} target="_blank" rel="noopener noreferrer" className="group">
+                              <div className="rounded-md border overflow-hidden bg-muted aspect-[3/2]">
+                                <img src={gp.emiratesIdBackUrl} alt="Emirates ID Back" className="w-full h-full object-cover group-hover:opacity-80 transition-opacity" />
+                              </div>
+                              <p className="text-[10px] text-center text-muted-foreground mt-1">EID Back</p>
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
             </div>
           )}
         </DialogContent>
@@ -2909,7 +3033,7 @@ function ViewCalendarPricing({ property }: { property: StPropertyData }) {
           const day = i + 1;
           const dateStr = `${currentMonth.year}-${String(currentMonth.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
           const dayOfWeek = new Date(currentMonth.year, currentMonth.month, day).getDay();
-          const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
+          const isWeekend = dayOfWeek === 0 || dayOfWeek === 6; // Sat (6), Sun (0)
           const booking = bookingMap.get(dateStr);
           const isBlocked = blockedSet.has(dateStr);
           const customPrice = pricingMap.get(dateStr);
@@ -3031,9 +3155,26 @@ function ViewCalendarPricing({ property }: { property: StPropertyData }) {
 // ─── Tab: Reviews ──────────────────────────────────────────────────────────
 
 function ViewReviews({ property }: { property: StPropertyData }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [respondingId, setRespondingId] = useState<string | null>(null);
+  const [responseText, setResponseText] = useState("");
+
   const { data, isLoading } = useQuery<{ reviews: any[]; total: number; avgRating: string }>({
     queryKey: [`/public/properties/${property.id}/reviews`],
     queryFn: () => api.get(`/public/properties/${property.id}/reviews?limit=50`),
+  });
+
+  const responseMut = useMutation({
+    mutationFn: ({ bookingId, response }: { bookingId: string; response: string }) =>
+      api.patch(`/bookings/${bookingId}/review/response`, { response }),
+    onSuccess: () => {
+      toast({ title: "Response saved" });
+      queryClient.invalidateQueries({ queryKey: [`/public/properties/${property.id}/reviews`] });
+      setRespondingId(null);
+      setResponseText("");
+    },
+    onError: (e: any) => toast({ title: e.message || "Failed to save", variant: "destructive" }),
   });
 
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin" /></div>;
@@ -3087,10 +3228,40 @@ function ViewReviews({ property }: { property: StPropertyData }) {
                     <p>{r.createdAt ? new Date(r.createdAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : ""}</p>
                   </div>
                 </div>
-                {r.pmResponse && (
+                {r.pmResponse ? (
                   <div className="mt-3 bg-muted/50 rounded p-3 text-sm">
                     <p className="text-xs font-semibold text-muted-foreground mb-1">PM Response</p>
                     <p>{r.pmResponse}</p>
+                  </div>
+                ) : (
+                  <div className="mt-3">
+                    {respondingId === r.bookingId ? (
+                      <div className="space-y-2">
+                        <Textarea
+                          placeholder="Write your response..."
+                          value={responseText}
+                          onChange={e => setResponseText(e.target.value)}
+                          rows={3}
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            disabled={!responseText.trim() || responseMut.isPending}
+                            onClick={() => responseMut.mutate({ bookingId: r.bookingId, response: responseText })}
+                          >
+                            {responseMut.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                            Save Response
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setRespondingId(null); setResponseText(""); }}>
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="outline" onClick={() => setRespondingId(r.bookingId)}>
+                        Respond to Review
+                      </Button>
+                    )}
                   </div>
                 )}
               </CardContent>

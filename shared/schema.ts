@@ -49,29 +49,14 @@ export const users = pgTable("users", {
   status: userStatusEnum("status").notNull().default("active"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex("users_email_role_unique").on(table.email, table.role),
-]);
-
-// ── Guests ─────────────────────────────────────────────
-
-// User profiles (KYC data for all portal users — PM, PO, Guest, Tenant)
-// Legacy table name "guests" in DB, exported as both names for backward compat
-export const userProfiles = pgTable("guests", {
-  id: varchar("id", { length: 36 })
-    .primaryKey()
-    .$defaultFn(() => crypto.randomUUID()),
-  userId: varchar("user_id", { length: 36 })
-    .notNull()
-    .unique()
-    .references(() => users.id, { onDelete: "cascade" }),
-  fullName: text("full_name").notNull(),
-  dob: date("dob").notNull(),
-  nationality: text("nationality").notNull(),
-  countryOfResidence: text("country_of_residence").notNull(),
-  residentAddress: text("resident_address").notNull(),
-  emiratesIdNumber: text("emirates_id_number").notNull(),
-  emiratesIdExpiry: date("emirates_id_expiry").notNull(),
+  // ── KYC Profile (nullable — only set after profile submission) ──
+  fullName: text("full_name"),
+  dob: date("dob"),
+  nationality: text("nationality"),
+  countryOfResidence: text("country_of_residence"),
+  residentAddress: text("resident_address"),
+  emiratesIdNumber: text("emirates_id_number"),
+  emiratesIdExpiry: date("emirates_id_expiry"),
   emiratesIdFrontUrl: text("emirates_id_front_url"),
   emiratesIdBackUrl: text("emirates_id_back_url"),
   // Passport (required for non-PM, optional for PM alongside Emirates ID)
@@ -86,13 +71,10 @@ export const userProfiles = pgTable("guests", {
   companyWebsite: text("company_website"),
   companyDescription: text("company_description"),
   companyAddress: text("company_address"),
-  kycStatus: kycStatusEnum("kyc_status").notNull().default("pending"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
-
-// Backward-compatible alias — all existing code imports "guests"
-export const guests = userProfiles;
+  kycStatus: kycStatusEnum("kyc_status"),
+}, (table) => [
+  uniqueIndex("users_email_role_unique").on(table.email, table.role),
+]);
 
 // ── OTP Verifications ──────────────────────────────────
 
@@ -182,7 +164,7 @@ export const messages = pgTable("messages", {
   id: varchar("id", { length: 36 })
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  conversationId: varchar("conversation_id", { length: 36 }).notNull(), // = guests.id
+  conversationId: varchar("conversation_id", { length: 36 }).notNull(), // = users.id
   senderId: varchar("sender_id", { length: 36 })
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
@@ -765,6 +747,35 @@ export const stBookingTransactions = pgTable("st_booking_transactions", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// ── PM-PO Settlements ───────────────────────────────
+
+export const pmPoSettlements = pgTable("pm_po_settlements", {
+  id: varchar("id", { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  bookingId: varchar("booking_id", { length: 36 }).references(() => stBookings.id, { onDelete: "cascade" }),
+  expenseId: varchar("expense_id", { length: 36 }),
+  propertyId: varchar("property_id", { length: 36 }).notNull().references(() => stProperties.id, { onDelete: "cascade" }),
+  fromUserId: varchar("from_user_id", { length: 36 }).notNull().references(() => users.id, { onDelete: "cascade" }),
+  toUserId: varchar("to_user_id", { length: 36 }).notNull().references(() => users.id, { onDelete: "cascade" }),
+  amount: text("amount").notNull(),
+  reason: text("reason").notNull(),
+  paymentMethodUsed: text("payment_method_used"),
+  collectedBy: text("collected_by"),
+  status: text("status").notNull().default("pending"),
+  notes: text("notes"),
+  paidAt: timestamp("paid_at"),
+  confirmedAt: timestamp("confirmed_at"),
+  proofUrl: text("proof_url"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("pm_po_settlements_booking_id_idx").on(table.bookingId),
+  index("pm_po_settlements_from_idx").on(table.fromUserId),
+  index("pm_po_settlements_to_idx").on(table.toUserId),
+]);
+
+export type PmPoSettlement = typeof pmPoSettlements.$inferSelect;
+export type InsertPmPoSettlement = typeof pmPoSettlements.$inferInsert;
+
 // ── ST Blocked Dates ────────────────────────────────
 
 export const stBlockedDates = pgTable("st_blocked_dates", {
@@ -877,9 +888,6 @@ export const pmSettings = pgTable("pm_settings", {
 export const insertUserSchema = createInsertSchema(users);
 export const selectUserSchema = createSelectSchema(users);
 
-export const insertGuestSchema = createInsertSchema(guests);
-export const selectGuestSchema = createSelectSchema(guests);
-
 export const insertAuditLogSchema = createInsertSchema(userAuditLog);
 export const selectAuditLogSchema = createSelectSchema(userAuditLog);
 
@@ -937,11 +945,11 @@ export const loginSchema = z.object({
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-export type UserProfile = typeof userProfiles.$inferSelect;
-export type InsertUserProfile = typeof userProfiles.$inferInsert;
-// Backward compat
-export type Guest = UserProfile;
-export type InsertGuest = InsertUserProfile;
+// Backward compat aliases — profile fields are now on User
+export type UserProfile = User;
+export type InsertUserProfile = InsertUser;
+export type Guest = User;
+export type InsertGuest = InsertUser;
 export type AuditLog = typeof userAuditLog.$inferSelect;
 export type InsertAuditLog = typeof userAuditLog.$inferInsert;
 export type PmPoLink = typeof pmPoLinks.$inferSelect;
@@ -984,6 +992,47 @@ export type StReview = typeof stReviews.$inferSelect;
 export type InsertStReview = typeof stReviews.$inferInsert;
 export type PmSetting = typeof pmSettings.$inferSelect;
 export type InsertPmSetting = typeof pmSettings.$inferInsert;
+
+// ── Message Templates ────────────────────────────────
+
+export const messageTriggerEnum = pgEnum("message_trigger", [
+  "manual",
+  "booking_confirmed",
+  "check_in_day",
+  "day_before_checkout",
+  "post_checkout",
+]);
+
+export const messageTemplates = pgTable("message_templates", {
+  id: varchar("id", { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  pmUserId: varchar("pm_user_id", { length: 36 }).notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  subject: text("subject"),
+  body: text("body").notNull(),
+  trigger: messageTriggerEnum("trigger").default("manual"),
+  triggerDelayHours: integer("trigger_delay_hours").default(0),
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("message_templates_pm_user_id_idx").on(table.pmUserId),
+]);
+
+export type MessageTemplate = typeof messageTemplates.$inferSelect;
+export type InsertMessageTemplate = typeof messageTemplates.$inferInsert;
+
+// Tracks which templates have already been sent for a booking+trigger, preventing duplicates
+export const messageTemplateSends = pgTable("message_template_sends", {
+  id: varchar("id", { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
+  templateId: varchar("template_id", { length: 36 }).notNull().references(() => messageTemplates.id, { onDelete: "cascade" }),
+  bookingId: varchar("booking_id", { length: 36 }).notNull(),
+  trigger: messageTriggerEnum("trigger").notNull(),
+  sentAt: timestamp("sent_at").notNull().defaultNow(),
+}, (table) => [
+  index("mts_template_booking_idx").on(table.templateId, table.bookingId),
+]);
+
+export type MessageTemplateSend = typeof messageTemplateSends.$inferSelect;
 
 // ── PM Roles & Team Members ─────────────────────────
 

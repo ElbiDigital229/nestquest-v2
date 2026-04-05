@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { plans, planFeatures, subscriptions, invoices, paymentMethods, userAuditLog, users, guests } from "../../shared/schema";
+import { plans, planFeatures, subscriptions, invoices, paymentMethods, userAuditLog, users } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { sanitize } from "../utils/sanitize";
@@ -18,8 +18,8 @@ async function notifySuperAdmins(opts: { type: Parameters<typeof createNotificat
 
 // Helper: get user display name
 async function getUserName(userId: string): Promise<string> {
-  const [guest] = await db.select({ fullName: guests.fullName }).from(guests).where(eq(guests.userId, userId)).limit(1);
-  return guest?.fullName || "Unknown User";
+  const [user] = await db.select({ fullName: users.fullName }).from(users).where(eq(users.id, userId)).limit(1);
+  return user?.fullName || "Unknown User";
 }
 
 const router = Router();

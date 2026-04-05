@@ -273,17 +273,40 @@ export default function BookingConfirm() {
                 <CardTitle className="text-lg">Price Breakdown</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {pricing.weekdayNights > 0 && (
-                  <div className="flex justify-between text-sm">
-                    <span>{pricing.weekdayNights} weekday {pricing.weekdayNights === 1 ? "night" : "nights"} x AED {Number(pricing.nightlyRate).toLocaleString()}</span>
-                    <span>AED {(pricing.weekdayNights * Number(pricing.nightlyRate)).toLocaleString()}</span>
-                  </div>
-                )}
-                {pricing.weekendNights > 0 && (
-                  <div className="flex justify-between text-sm">
-                    <span>{pricing.weekendNights} weekend {pricing.weekendNights === 1 ? "night" : "nights"} x AED {Number(pricing.weekendRate).toLocaleString()}</span>
-                    <span>AED {(pricing.weekendNights * Number(pricing.weekendRate)).toLocaleString()}</span>
-                  </div>
+                {(pricing as any).pricingBreakdown?.length > 0 ? (
+                  (() => {
+                    const groups: { label: string; price: number; count: number }[] = [];
+                    for (const night of (pricing as any).pricingBreakdown) {
+                      const label = night.type === "custom" ? "custom" : night.type === "weekend" ? "Weekend" : "Weekday";
+                      const last = groups[groups.length - 1];
+                      if (last && last.price === night.price && last.label === label) {
+                        last.count++;
+                      } else {
+                        groups.push({ label, price: night.price, count: 1 });
+                      }
+                    }
+                    return groups.map((g, i) => (
+                      <div key={i} className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">AED {Number(g.price).toLocaleString()} × {g.count} {g.label} night{g.count !== 1 ? "s" : ""}</span>
+                        <span>AED {(g.price * g.count).toLocaleString()}</span>
+                      </div>
+                    ));
+                  })()
+                ) : (
+                  <>
+                    {pricing.weekdayNights > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">{pricing.weekdayNights} weekday {pricing.weekdayNights === 1 ? "night" : "nights"} × AED {Number(pricing.nightlyRate).toLocaleString()}</span>
+                        <span>AED {(pricing.weekdayNights * Number(pricing.nightlyRate)).toLocaleString()}</span>
+                      </div>
+                    )}
+                    {pricing.weekendNights > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">{pricing.weekendNights} weekend {pricing.weekendNights === 1 ? "night" : "nights"} × AED {Number(pricing.weekendRate).toLocaleString()}</span>
+                        <span>AED {(pricing.weekendNights * Number(pricing.weekendRate)).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <Separator />

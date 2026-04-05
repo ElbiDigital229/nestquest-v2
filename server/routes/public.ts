@@ -206,10 +206,10 @@ router.get("/properties/:id/reviews", async (req: Request, res: Response) => {
       FROM st_reviews WHERE property_id = ${id}
     `);
     const reviews = await db.execute(sql`
-      SELECT r.id, r.rating, r.title, r.description,
-        r.pm_response AS "pmResponse", r.created_at AS "createdAt",
+      SELECT r.id, r.booking_id AS "bookingId", r.rating, r.title, r.description,
+        r.pm_response AS "pmResponse", r.pm_responded_at AS "pmRespondedAt", r.created_at AS "createdAt",
         g.full_name AS "guestName"
-      FROM st_reviews r LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      FROM st_reviews r LEFT JOIN users g ON g.id = r.guest_user_id
       WHERE r.property_id = ${id} ORDER BY r.created_at DESC
       LIMIT ${limit} OFFSET ${offset}
     `);
@@ -255,7 +255,7 @@ router.get("/properties/:id", async (req: Request, res: Response) => {
         pm_guest.full_name AS "pmName"
       FROM st_properties p
       LEFT JOIN areas a ON a.id = p.area_id
-      LEFT JOIN guests pm_guest ON pm_guest.user_id = p.pm_user_id
+      LEFT JOIN users pm_guest ON pm_guest.id = p.pm_user_id
       WHERE p.id = ${id} AND p.status = 'active'
     `);
 

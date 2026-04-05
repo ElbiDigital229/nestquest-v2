@@ -1,14 +1,18 @@
 import { Router, Request, Response } from "express";
-import { db } from "../db/index";
+import { db, withTransaction } from "../db/index";
 import { sql } from "drizzle-orm";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { createNotification } from "../utils/notify";
 import { logPropertyActivity } from "../utils/property-activity";
 import { recordBookingIncome, recordBookingRefund, recordDepositReturn, recordOwnerPayout } from "../utils/booking-financials";
-import { createBookingSettlements } from "../utils/settlements";
-import { triggerCleaningAutomation } from "./cleaners";
 import { getPmUserId, requirePmPermission } from "../middleware/pm-permissions";
 import { sanitize } from "../utils/sanitize";
+import { bookingEmitter } from "../events/booking-emitter";
+import {
+  calculatePriceHandler,
+  createBookingHandler,
+  confirmBookingHandler,
+} from "../controllers/booking.controller";
 
 const router = Router();
 
@@ -21,8 +25,8 @@ function calculateNights(checkIn: string, checkOut: string) {
   const current = new Date(start);
   while (current < end) {
     const day = current.getDay();
-    // Friday (5) and Saturday (6) are weekend in UAE
-    if (day === 5 || day === 6) {
+    // Saturday (6) and Sunday (0) are weekend
+    if (day === 0 || day === 6) {
       weekendNights++;
     } else {
       weekdayNights++;
@@ -83,8 +87,8 @@ router.get("/payment-details/:propertyId", requireAuth, async (req: Request, res
       ...row,
       acceptedPaymentMethods: row.acceptedPaymentMethods ? JSON.parse(row.acceptedPaymentMethods) : [],
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -94,295 +98,11 @@ router.get("/payment-details/:propertyId", requireAuth, async (req: Request, res
 
 // ── POST /api/bookings/calculate-price ────────────────
 // Calculate price breakdown without creating a booking
-router.post("/calculate-price", async (req: Request, res: Response) => {
-  try {
-    const { propertyId, checkIn, checkOut, guests } = req.body;
-
-    if (!propertyId || !checkIn || !checkOut) {
-      return res.status(400).json({ error: "propertyId, checkIn, and checkOut are required" });
-    }
-
-    // Validate dates
-    const checkInDate = new Date(checkIn + "T00:00:00");
-    const checkOutDate = new Date(checkOut + "T00:00:00");
-    if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
-      return res.status(400).json({ error: "Invalid date format" });
-    }
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    if (checkInDate < today) {
-      return res.status(400).json({ error: "Check-in date cannot be in the past" });
-    }
-    if (checkOutDate <= checkInDate) {
-      return res.status(400).json({ error: "Check-out date must be after check-in date" });
-    }
-
-    // Get property pricing
-    const propResult = await db.execute(sql`
-      SELECT p.nightly_rate, p.weekend_rate, p.minimum_stay, p.cleaning_fee,
-        p.security_deposit_required, p.security_deposit_amount,
-        p.max_guests, p.pm_user_id, p.cancellation_policy
-      FROM st_properties p WHERE p.id = ${propertyId} AND p.status = 'active'
-    `);
-
-    if (propResult.rows.length === 0) {
-      return res.status(404).json({ error: "Property not found" });
-    }
-
-    const prop = propResult.rows[0] as any;
-    const { totalNights, weekdayNights, weekendNights } = calculateNights(checkIn, checkOut);
-
-    if (totalNights < (prop.minimum_stay || 1)) {
-      return res.status(400).json({ error: `Minimum stay is ${prop.minimum_stay || 1} nights` });
-    }
-    if (guests && guests > prop.max_guests) {
-      return res.status(400).json({ error: `Maximum ${prop.max_guests} guests allowed` });
-    }
-
-    const nightlyRate = parseFloat(prop.nightly_rate || "0");
-    const weekendRate = parseFloat(prop.weekend_rate || prop.nightly_rate || "0");
-    const cleaningFee = parseFloat(prop.cleaning_fee || "0");
-    const securityDeposit = prop.security_deposit_required ? parseFloat(prop.security_deposit_amount || "0") : 0;
-
-    // Check for custom date-specific pricing
-    const customPricing = await db.execute(sql`
-      SELECT date, price FROM st_property_pricing
-      WHERE property_id = ${propertyId} AND date >= ${checkIn} AND date < ${checkOut}
-    `);
-    const customPriceMap = new Map((customPricing.rows as any[]).map(r => [r.date.toISOString().slice(0, 10), parseFloat(r.price)]));
-
-    // Calculate nightly total respecting custom prices
-    let nightlyTotal = 0;
-    const d = new Date(checkIn + "T00:00:00");
-    const endD = new Date(checkOut + "T00:00:00");
-    while (d < endD) {
-      const dateStr = d.toISOString().slice(0, 10);
-      const dayOfWeek = d.getDay();
-      const isWeekend = dayOfWeek === 5 || dayOfWeek === 6;
-      const customPrice = customPriceMap.get(dateStr);
-      nightlyTotal += customPrice !== undefined ? customPrice : (isWeekend ? weekendRate : nightlyRate);
-      d.setDate(d.getDate() + 1);
-    }
-
-    // Get PM tax settings
-    const taxResult = await db.execute(sql`
-      SELECT tourism_tax_percent, vat_percent FROM pm_settings WHERE pm_user_id = ${prop.pm_user_id} LIMIT 1
-    `);
-    const taxSettings = taxResult.rows[0] as any || { tourism_tax_percent: "0", vat_percent: "0" };
-    const tourismTaxPct = parseFloat(taxSettings.tourism_tax_percent || "0");
-    const vatPct = parseFloat(taxSettings.vat_percent || "0");
-
-    const subtotal = nightlyTotal + cleaningFee;
-    const tourismTax = nightlyTotal * (tourismTaxPct / 100);
-    const vat = subtotal * (vatPct / 100);
-    const total = subtotal + tourismTax + vat + securityDeposit;
-
-    return res.json({
-      totalNights,
-      weekdayNights,
-      weekendNights,
-      nightlyRate: nightlyRate.toFixed(2),
-      weekendRate: weekendRate.toFixed(2),
-      nightlyTotal: nightlyTotal.toFixed(2),
-      cleaningFee: cleaningFee.toFixed(2),
-      subtotal: subtotal.toFixed(2),
-      tourismTax: tourismTax.toFixed(2),
-      tourismTaxPercent: tourismTaxPct,
-      vat: vat.toFixed(2),
-      vatPercent: vatPct,
-      securityDeposit: securityDeposit.toFixed(2),
-      total: total.toFixed(2),
-      minimumStay: prop.minimum_stay || 1,
-      cancellationPolicy: prop.cancellation_policy,
-    });
-  } catch (error: any) {
-    console.error("[Bookings] calculate-price error:", error);
-    return res.status(500).json({ error: "Failed to calculate price" });
-  }
-});
+router.post("/calculate-price", calculatePriceHandler);
 
 // ── POST /api/bookings ────────────────────────────────
-// Create a booking (guest only)
-router.post("/", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.session.userId!;
-    const userRole = req.session.userRole!;
-
-    // Only guests, POs, and tenants can book via public flow. PMs/team use /manual.
-    if (userRole === "SUPER_ADMIN") {
-      return res.status(403).json({ error: "Admins cannot create bookings" });
-    }
-    if (userRole === "PROPERTY_MANAGER") {
-      return res.status(403).json({ error: "Property Managers should use the manual booking feature" });
-    }
-    if (userRole === "PM_TEAM_MEMBER") {
-      return res.status(403).json({ error: "Team members should use the manual booking feature" });
-    }
-    if (userRole === "CLEANER") {
-      return res.status(403).json({ error: "Cleaners cannot create bookings" });
-    }
-
-    const { propertyId, checkIn, checkOut, guests, paymentMethod, specialRequests } = req.body;
-
-    if (!propertyId || !checkIn || !checkOut || !guests) {
-      return res.status(400).json({ error: "Missing required fields" });
-    }
-
-    // Validate dates
-    const checkInDate = new Date(checkIn + "T00:00:00");
-    const checkOutDate = new Date(checkOut + "T00:00:00");
-    if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
-      return res.status(400).json({ error: "Invalid date format" });
-    }
-    if (checkOutDate <= checkInDate) {
-      return res.status(400).json({ error: "Check-out date must be after check-in date" });
-    }
-    // Guests cannot book past dates
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (checkInDate < today) {
-      return res.status(400).json({ error: "Check-in date cannot be in the past" });
-    }
-
-    // Get property details
-    const propResult = await db.execute(sql`
-      SELECT p.*, a.name AS area_name FROM st_properties p
-      LEFT JOIN areas a ON a.id = p.area_id
-      WHERE p.id = ${propertyId} AND p.status = 'active'
-    `);
-
-    if (propResult.rows.length === 0) {
-      return res.status(404).json({ error: "Property not found or not active" });
-    }
-
-    const prop = propResult.rows[0] as any;
-
-    // Validate minimum stay
-    const { totalNights, weekdayNights, weekendNights } = calculateNights(checkIn, checkOut);
-    if (totalNights < (prop.minimum_stay || 1)) {
-      return res.status(400).json({ error: `Minimum stay is ${prop.minimum_stay || 1} nights` });
-    }
-    if (guests > prop.max_guests) {
-      return res.status(400).json({ error: `Maximum ${prop.max_guests} guests allowed` });
-    }
-
-    // Check availability (atomic with row lock simulation)
-    const conflict = await db.execute(sql`
-      SELECT 1 FROM st_bookings
-      WHERE property_id = ${propertyId}
-      AND status IN ('confirmed', 'checked_in', 'requested')
-      AND check_in_date < ${checkOut}
-      AND check_out_date > ${checkIn}
-      LIMIT 1
-    `);
-    if (conflict.rows.length > 0) {
-      return res.status(409).json({ error: "Selected dates are no longer available" });
-    }
-
-    const blockedConflict = await db.execute(sql`
-      SELECT 1 FROM st_blocked_dates
-      WHERE property_id = ${propertyId}
-      AND start_date < ${checkOut}
-      AND end_date > ${checkIn}
-      LIMIT 1
-    `);
-    if (blockedConflict.rows.length > 0) {
-      return res.status(409).json({ error: "Selected dates are blocked by the host" });
-    }
-
-    // Calculate pricing
-    const nightlyRate = parseFloat(prop.nightly_rate || "0");
-    const weekendRate = parseFloat(prop.weekend_rate || prop.nightly_rate || "0");
-    const cleaningFee = parseFloat(prop.cleaning_fee || "0");
-    const securityDeposit = prop.security_deposit_required ? parseFloat(prop.security_deposit_amount || "0") : 0;
-    const nightlyTotal = (weekdayNights * nightlyRate) + (weekendNights * weekendRate);
-
-    // Tax settings
-    const taxResult = await db.execute(sql`
-      SELECT tourism_tax_percent, vat_percent FROM pm_settings WHERE pm_user_id = ${prop.pm_user_id} LIMIT 1
-    `);
-    const tax = taxResult.rows[0] as any || { tourism_tax_percent: "0", vat_percent: "0" };
-    const tourismTax = nightlyTotal * (parseFloat(tax.tourism_tax_percent || "0") / 100);
-    const vat = (nightlyTotal + cleaningFee) * (parseFloat(tax.vat_percent || "0") / 100);
-    const subtotal = nightlyTotal + cleaningFee;
-    const total = subtotal + tourismTax + vat + securityDeposit;
-
-    // Commission calculation (based on rental income, not deposit)
-    const rentalIncome = subtotal + tourismTax + vat;
-    let commissionAmount = "0";
-    if (prop.commission_type === "percentage_per_booking" && prop.commission_value) {
-      commissionAmount = (subtotal * (parseFloat(prop.commission_value) / 100)).toFixed(2);
-    }
-    const ownerPayoutAmount = (rentalIncome - parseFloat(commissionAmount)).toFixed(2);
-
-    // Create booking
-    const bookingId = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-    await db.execute(sql`
-      INSERT INTO st_bookings (
-        id, property_id, guest_user_id, pm_user_id, source, status,
-        check_in_date, check_out_date, number_of_guests, total_nights,
-        weekday_nights, weekend_nights,
-        nightly_rate, weekend_rate, cleaning_fee, tourism_tax, vat,
-        subtotal, total_amount, security_deposit_amount,
-        payment_method, payment_status, cancellation_policy,
-        commission_type, commission_value, commission_amount,
-        bank_account_belongs_to, owner_payout_amount, owner_payout_status,
-        special_requests, expires_at, created_at, updated_at
-      ) VALUES (
-        ${bookingId}, ${propertyId}, ${userId}, ${prop.pm_user_id},
-        'website', 'requested',
-        ${checkIn}, ${checkOut}, ${guests}, ${totalNights},
-        ${weekdayNights}, ${weekendNights},
-        ${nightlyRate.toFixed(2)}, ${weekendRate.toFixed(2)},
-        ${cleaningFee.toFixed(2)}, ${tourismTax.toFixed(2)}, ${vat.toFixed(2)},
-        ${subtotal.toFixed(2)}, ${total.toFixed(2)},
-        ${securityDeposit > 0 ? securityDeposit.toFixed(2) : null},
-        ${paymentMethod ? sql.raw(`'${paymentMethod}'::st_booking_payment_method`) : sql`NULL`},
-        'pending',
-        ${prop.cancellation_policy ? sql.raw(`'${prop.cancellation_policy}'::st_cancellation_policy`) : sql`NULL`},
-        ${prop.commission_type ? sql.raw(`'${prop.commission_type}'::st_commission_type`) : sql`NULL`},
-        ${prop.commission_value || null},
-        ${commissionAmount},
-        ${prop.bank_account_belongs_to ? sql.raw(`'${prop.bank_account_belongs_to}'::st_bank_account_belongs_to`) : sql`NULL`},
-        ${ownerPayoutAmount}, 'pending',
-        ${specialRequests ? sanitize(specialRequests) : null},
-        ${expiresAt},
-        NOW(), NOW()
-      )
-    `);
-
-    // Get guest name for notifications
-    const guestResult = await db.execute(sql`
-      SELECT full_name FROM guests WHERE user_id = ${userId} LIMIT 1
-    `);
-    const guestName = (guestResult.rows[0] as any)?.full_name || "A guest";
-
-    // Notify PM
-    await createNotification({
-      userId: prop.pm_user_id,
-      type: "BOOKING_REQUESTED",
-      title: "New booking request",
-      body: `${guestName} has requested to book ${prop.public_name || "your property"} from ${checkIn} to ${checkOut}`,
-      linkUrl: `/portal/st-properties/${propertyId}?tab=bookings`,
-      relatedId: bookingId,
-    });
-
-    // Log activity
-    await logPropertyActivity(
-      propertyId,
-      userId,
-      "booking_created",
-      `New booking request from ${guestName} (${checkIn} to ${checkOut})`,
-      { bookingId, checkIn, checkOut, totalAmount: total.toFixed(2) }
-    );
-
-    return res.status(201).json({ id: bookingId, status: "requested", expiresAt });
-  } catch (error: any) {
-    console.error("[Bookings] POST error:", error);
-    return res.status(500).json({ error: "Failed to create booking" });
-  }
-});
+// Create a booking (guest only) — availability check uses SELECT FOR UPDATE to prevent double-booking
+router.post("/", requireAuth, createBookingHandler);
 
 // ── GET /api/bookings/my ──────────────────────────────
 // List bookings for current user (guest sees their bookings, PM sees all managed bookings)
@@ -430,7 +150,7 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       LEFT JOIN areas a ON a.id = p.area_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE ${ownerFilter}
       ${statusFilter}
       ORDER BY b.created_at DESC
@@ -468,7 +188,7 @@ router.get("/guests", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       JOIN users u ON u.id = b.guest_user_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE p.pm_user_id = ${pmId}
         AND b.guest_user_id IS NOT NULL
       GROUP BY u.id, g.full_name, b.guest_name, u.email, u.phone, g.nationality, g.kyc_status
@@ -478,7 +198,7 @@ router.get("/guests", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (
     return res.json(result.rows);
   } catch (error: any) {
     console.error("[Bookings] GET /guests error:", error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: "Failed to fetch guests" });
   }
 });
 
@@ -491,13 +211,12 @@ router.get("/guests/:guestId/history", requireRole("PROPERTY_MANAGER", "PM_TEAM_
     // Guest profile
     const profileResult = await db.execute(sql`
       SELECT u.id, u.email, u.phone, u.created_at AS "registeredAt",
-        g.full_name AS "fullName", g.dob, g.nationality,
-        g.country_of_residence AS "countryOfResidence", g.resident_address AS "residentAddress",
-        g.emirates_id_number AS "emiratesIdNumber", g.emirates_id_expiry AS "emiratesIdExpiry",
-        g.passport_number AS "passportNumber", g.passport_expiry AS "passportExpiry",
-        g.kyc_status AS "kycStatus"
+        u.full_name AS "fullName", u.dob, u.nationality,
+        u.country_of_residence AS "countryOfResidence", u.resident_address AS "residentAddress",
+        u.emirates_id_number AS "emiratesIdNumber", u.emirates_id_expiry AS "emiratesIdExpiry",
+        u.passport_number AS "passportNumber", u.passport_expiry AS "passportExpiry",
+        u.kyc_status AS "kycStatus"
       FROM users u
-      LEFT JOIN guests g ON g.user_id = u.id
       WHERE u.id = ${guestId}
     `);
 
@@ -534,7 +253,7 @@ router.get("/guests/:guestId/history", requireRole("PROPERTY_MANAGER", "PM_TEAM_
     });
   } catch (error: any) {
     console.error("[Bookings] GET /guests/:id/history error:", error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: "Failed to fetch guest history" });
   }
 });
 
@@ -552,14 +271,183 @@ router.get("/cancellations", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), 
         COALESCE(g.full_name, b.guest_name) AS "guestName"
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE p.pm_user_id = ${pmId}
         AND b.status IN ('cancelled', 'declined')
       ORDER BY COALESCE(b.cancelled_at, b.declined_at) DESC
     `);
     return res.json(result.rows);
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── GET /api/bookings/:id/ledger ─────────────────────
+// Unified financial ledger for a booking — role-filtered
+// Guest: fee breakdown + deposit status
+// PO: their payout + settlement status + deposit damage view
+// PM/SA: everything
+router.get("/:id/ledger", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.session.userId!;
+    const userRole = req.session.userRole!;
+    const { id } = req.params;
+
+    // Fetch base booking + property
+    const bookingResult = await db.execute(sql`
+      SELECT b.id, b.status, b.guest_user_id, b.pm_user_id, b.property_id,
+        b.check_in_date AS "checkInDate", b.check_out_date AS "checkOutDate",
+        b.total_nights AS "totalNights",
+        b.nightly_rate AS "nightlyRate", b.weekend_rate AS "weekendRate",
+        b.weekday_nights AS "weekdayNights", b.weekend_nights AS "weekendNights",
+        b.cleaning_fee AS "cleaningFee", b.tourism_tax AS "tourismTax", b.vat,
+        b.subtotal, b.total_amount AS "totalAmount",
+        b.security_deposit_amount AS "securityDepositAmount",
+        b.commission_amount AS "commissionAmount",
+        b.owner_payout_amount AS "ownerPayoutAmount",
+        b.owner_payout_status AS "ownerPayoutStatus",
+        b.payment_status AS "paymentStatus", b.payment_method AS "paymentMethod",
+        b.refund_amount AS "refundAmount", b.cancellation_reason AS "cancellationReason",
+        p.po_user_id AS "poUserId", p.public_name AS "propertyName"
+      FROM st_bookings b
+      JOIN st_properties p ON p.id = b.property_id
+      WHERE b.id = ${id}
+    `);
+
+    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+
+    const b = bookingResult.rows[0] as any;
+
+    // Access control
+    const isGuest = b.guest_user_id === userId;
+    const isPm = b.pm_user_id === userId;
+    const isPo = b.po_user_id === userId;
+    const isSa = userRole === "SUPER_ADMIN";
+    const isPmTeam = userRole === "PM_TEAM_MEMBER";
+
+    if (!isGuest && !isPm && !isPo && !isSa && !isPmTeam) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    // Deposit status — visible to all parties (with different detail levels)
+    const depositResult = await db.execute(sql`
+      SELECT id, amount, status, returned_amount AS "returnedAmount",
+        returned_at AS "returnedAt", deductions, notes
+      FROM st_security_deposits WHERE booking_id = ${id} LIMIT 1
+    `);
+    const deposit = depositResult.rows[0] as any || null;
+
+    // Build guest-facing view (fee breakdown + deposit)
+    const guestView = {
+      nights: b.totalNights,
+      weekdayNights: b.weekdayNights,
+      weekendNights: b.weekendNights,
+      nightlyRate: b.nightlyRate,
+      weekendRate: b.weekendRate,
+      cleaningFee: b.cleaningFee,
+      tourismTax: b.tourismTax,
+      vat: b.vat,
+      subtotal: b.subtotal,
+      totalAmount: b.totalAmount,
+      paymentStatus: b.paymentStatus,
+      paymentMethod: b.paymentMethod,
+      refundAmount: b.refundAmount,
+      cancellationReason: b.cancellationReason,
+      deposit: deposit ? {
+        amount: deposit.amount || b.securityDepositAmount,
+        status: deposit.status || "held",
+        returnedAmount: deposit.returnedAmount,
+        returnedAt: deposit.returnedAt,
+        deductions: deposit.deductions ? JSON.parse(deposit.deductions) : [],
+        notes: deposit.notes,
+      } : (b.securityDepositAmount ? { amount: b.securityDepositAmount, status: "held", returnedAmount: null, returnedAt: null, deductions: [], notes: null } : null),
+    };
+
+    if (isGuest) return res.json({ role: "guest", ...guestView });
+
+    // PM/PO/SA: fetch settlements
+    const settlementsResult = await db.execute(sql`
+      SELECT s.id, s.reason, s.amount, s.status, s.from_user_id AS "fromUserId",
+        s.to_user_id AS "toUserId", s.paid_at AS "paidAt", s.confirmed_at AS "confirmedAt",
+        s.notes, s.proof_url AS "proofUrl", s.collected_by AS "collectedBy",
+        fu.full_name AS "fromName", tu.full_name AS "toName"
+      FROM pm_po_settlements s
+      LEFT JOIN users fu ON fu.id = s.from_user_id
+      LEFT JOIN users tu ON tu.id = s.to_user_id
+      WHERE s.booking_id = ${id}
+      ORDER BY s.created_at ASC
+    `);
+    const settlements = settlementsResult.rows as any[];
+
+    // PO view — only their payout, deposit damage info
+    if (isPo && !isSa) {
+      const mySettlement = settlements.find(s => s.reason === "owner_payout" && s.toUserId === userId);
+      return res.json({
+        role: "owner",
+        property: b.propertyName,
+        checkInDate: b.checkInDate,
+        checkOutDate: b.checkOutDate,
+        bookingTotal: b.totalAmount,
+        myPayout: {
+          amount: b.ownerPayoutAmount,
+          status: mySettlement?.status || b.ownerPayoutStatus || "pending",
+          paidAt: mySettlement?.paidAt || null,
+          confirmedAt: mySettlement?.confirmedAt || null,
+          proofUrl: mySettlement?.proofUrl || null,
+          settlementId: mySettlement?.id || null,
+        },
+        deposit: deposit ? {
+          amount: deposit.amount || b.securityDepositAmount,
+          status: deposit.status || "held",
+          returnedAmount: deposit.returnedAmount,
+          deductions: deposit.deductions ? JSON.parse(deposit.deductions) : [],
+          notes: deposit.notes,
+        } : null,
+        commission: {
+          amount: b.commissionAmount,
+        },
+      });
+    }
+
+    // PM/SA: full ledger — transactions + settlements + deposit
+    const txResult = await db.execute(sql`
+      SELECT id, transaction_type AS "transactionType", category, amount, direction,
+        held_by AS "heldBy", owed_to AS "owedTo", description, recorded_at AS "recordedAt"
+      FROM st_booking_transactions
+      WHERE booking_id = ${id}
+      ORDER BY recorded_at ASC
+    `);
+
+    return res.json({
+      role: isSa ? "admin" : "pm",
+      property: b.propertyName,
+      checkInDate: b.checkInDate,
+      checkOutDate: b.checkOutDate,
+      status: b.status,
+      guest: {
+        ...guestView,
+      },
+      transactions: txResult.rows,
+      settlements,
+      ownerPayout: {
+        amount: b.ownerPayoutAmount,
+        status: b.ownerPayoutStatus,
+      },
+      commission: {
+        amount: b.commissionAmount,
+      },
+      deposit: deposit ? {
+        amount: deposit.amount,
+        status: deposit.status,
+        returnedAmount: deposit.returnedAmount,
+        returnedAt: deposit.returnedAt,
+        deductions: deposit.deductions ? JSON.parse(deposit.deductions) : [],
+        notes: deposit.notes,
+      } : null,
+    });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    console.error("[Bookings] GET /:id/ledger error:", error);
+    return res.status(500).json({ error: "Failed to fetch ledger" });
   }
 });
 
@@ -583,8 +471,8 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       LEFT JOIN areas a ON a.id = p.area_id
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
-      LEFT JOIN guests pm_g ON pm_g.user_id = b.pm_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
+      LEFT JOIN users pm_g ON pm_g.id = b.pm_user_id
       WHERE b.id = ${id}
     `);
 
@@ -607,17 +495,16 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
     let guestProfile = null;
     if ((isPm || isPo || userRole === "SUPER_ADMIN" || userRole === "PM_TEAM_MEMBER") && booking.guest_user_id) {
       const guestResult = await db.execute(sql`
-        SELECT g.full_name AS "fullName", g.dob, g.nationality,
-          g.country_of_residence AS "countryOfResidence", g.resident_address AS "residentAddress",
-          g.emirates_id_number AS "emiratesIdNumber", g.emirates_id_expiry AS "emiratesIdExpiry",
-          g.emirates_id_front_url AS "emiratesIdFrontUrl", g.emirates_id_back_url AS "emiratesIdBackUrl",
-          g.passport_number AS "passportNumber", g.passport_expiry AS "passportExpiry",
-          g.passport_front_url AS "passportFrontUrl",
-          g.kyc_status AS "kycStatus",
+        SELECT u.full_name AS "fullName", u.dob, u.nationality,
+          u.country_of_residence AS "countryOfResidence", u.resident_address AS "residentAddress",
+          u.emirates_id_number AS "emiratesIdNumber", u.emirates_id_expiry AS "emiratesIdExpiry",
+          u.emirates_id_front_url AS "emiratesIdFrontUrl", u.emirates_id_back_url AS "emiratesIdBackUrl",
+          u.passport_number AS "passportNumber", u.passport_expiry AS "passportExpiry",
+          u.passport_front_url AS "passportFrontUrl",
+          u.kyc_status AS "kycStatus",
           u.email, u.phone, u.created_at AS "registeredAt"
-        FROM guests g
-        JOIN users u ON u.id = g.user_id
-        WHERE g.user_id = ${booking.guest_user_id}
+        FROM users u
+        WHERE u.id = ${booking.guest_user_id}
       `);
       if (guestResult.rows.length > 0) guestProfile = guestResult.rows[0];
 
@@ -631,6 +518,42 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
         WHERE ud.user_id = ${booking.guest_user_id}
       `);
       if (guestProfile) (guestProfile as any).documents = guestDocs.rows;
+    }
+
+    // Build per-night pricing breakdown
+    // Helper: convert pg date (may be string "YYYY-MM-DD" or Date object) to "YYYY-MM-DD"
+    const toDateKey = (d: any): string => {
+      if (!d) return "";
+      if (typeof d === "string") return d.slice(0, 10);
+      if (d instanceof Date) return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+      return String(d).slice(0, 10);
+    };
+    const checkInKey = toDateKey(booking.check_in_date);
+    const checkOutKey = toDateKey(booking.check_out_date);
+    const customPricingRows = await db.execute(sql`
+      SELECT date::text AS date, price FROM st_property_pricing
+      WHERE property_id = ${booking.property_id}
+        AND date >= ${checkInKey}::date AND date < ${checkOutKey}::date
+    `);
+    const customPriceMap = new Map(
+      (customPricingRows.rows as any[]).map((r) => [r.date.slice(0, 10), parseFloat(r.price)])
+    );
+    const nightlyRate = parseFloat(booking.nightly_rate || "0");
+    const weekendRate = parseFloat(booking.weekend_rate || booking.nightly_rate || "0");
+    const pricingBreakdown: { date: string; price: number; type: string }[] = [];
+    const dLoop = new Date(checkInKey + "T00:00:00Z");
+    const endLoop = new Date(checkOutKey + "T00:00:00Z");
+    while (dLoop < endLoop) {
+      const dateStr = `${dLoop.getUTCFullYear()}-${String(dLoop.getUTCMonth() + 1).padStart(2, "0")}-${String(dLoop.getUTCDate()).padStart(2, "0")}`;
+      const dow = dLoop.getUTCDay();
+      const isWeekend = dow === 0 || dow === 6;
+      const custom = customPriceMap.get(dateStr);
+      pricingBreakdown.push({
+        date: dateStr,
+        price: custom !== undefined ? custom : isWeekend ? weekendRate : nightlyRate,
+        type: custom !== undefined ? "custom" : isWeekend ? "weekend" : "weekday",
+      });
+      dLoop.setUTCDate(dLoop.getUTCDate() + 1);
     }
 
     // Get review if exists
@@ -680,6 +603,7 @@ router.get("/:id", requireAuth, async (req: Request, res: Response) => {
       weekendNights: booking.weekend_nights,
       nightlyRate: booking.nightly_rate,
       weekendRate: booking.weekend_rate,
+      pricingBreakdown,
       cleaningFee: booking.cleaning_fee,
       tourismTax: booking.tourism_tax,
       vat: booking.vat,
@@ -798,8 +722,8 @@ router.get("/:id/cancel-preview", requireAuth, async (req: Request, res: Respons
       cancellationPolicy: booking.cancellation_policy,
       status: booking.status,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -844,58 +768,60 @@ router.patch("/:id/cancel", requireAuth, async (req: Request, res: Response) => 
     const depositRefund = securityDeposit; // Always full return on cancel
     const totalRefund = rentalRefund + depositRefund;
 
-    // 1. Update booking status
-    await db.execute(sql`
-      UPDATE st_bookings SET
-        status = 'cancelled',
-        cancelled_at = NOW(),
-        cancelled_by = ${userId},
-        cancellation_reason = ${sanitize(reason)},
-        refund_amount = ${totalRefund.toFixed(2)},
-        payment_status = ${totalRefund > 0 ? sql.raw("'refunded'::st_booking_payment_status") : sql.raw("'paid'::st_booking_payment_status")},
-        updated_at = NOW()
-      WHERE id = ${id}
-    `);
-
-    // 2. Void/delete pending settlements for this booking
-    await db.execute(sql`
-      DELETE FROM pm_po_settlements WHERE booking_id = ${id} AND status = 'pending'
-    `);
-
-    // 3. Auto-return security deposit if exists
-    if (securityDeposit > 0) {
-      const depositResult = await db.execute(sql`
-        SELECT id FROM st_security_deposits WHERE booking_id = ${id} AND status NOT IN ('returned', 'forfeited')
+    // ── Atomic transaction: cancel booking + handle refund + deposit ──
+    await withTransaction(async (tx) => {
+      // 1. Update booking status
+      await tx.execute(sql`
+        UPDATE st_bookings SET
+          status = 'cancelled',
+          cancelled_at = NOW(),
+          cancelled_by = ${userId},
+          cancellation_reason = ${sanitize(reason)},
+          refund_amount = ${totalRefund.toFixed(2)},
+          payment_status = ${totalRefund > 0 ? sql.raw("'refunded'::st_booking_payment_status") : sql.raw("'paid'::st_booking_payment_status")},
+          updated_at = NOW()
+        WHERE id = ${id}
       `);
-      if (depositResult.rows.length > 0) {
-        await db.execute(sql`
-          UPDATE st_security_deposits SET
-            status = 'returned', returned_amount = ${securityDeposit.toFixed(2)},
-            returned_at = NOW(), notes = 'Auto-returned on cancellation', updated_at = NOW()
-          WHERE booking_id = ${id}
+
+      // 2. Void pending settlements for this booking
+      await tx.execute(sql`
+        DELETE FROM pm_po_settlements WHERE booking_id = ${id} AND status = 'pending'
+      `);
+
+      // 3. Auto-return security deposit if exists
+      if (securityDeposit > 0) {
+        const depositResult = await tx.execute(sql`
+          SELECT id FROM st_security_deposits WHERE booking_id = ${id} AND status NOT IN ('returned', 'forfeited')
+        `);
+        if (depositResult.rows.length > 0) {
+          await tx.execute(sql`
+            UPDATE st_security_deposits SET
+              status = 'returned', returned_amount = ${securityDeposit.toFixed(2)},
+              returned_at = NOW(), notes = 'Auto-returned on cancellation', updated_at = NOW()
+            WHERE booking_id = ${id}
+          `);
+        }
+      }
+
+      // 4. Record refund transaction + create guest refund settlement (confirmed bookings only)
+      if (totalRefund > 0 && booking.status === "confirmed") {
+        await recordBookingRefund({
+          id: booking.id,
+          propertyId: booking.property_id,
+          refundAmount: totalRefund.toFixed(2),
+          bankAccountBelongsTo: booking.bank_account_belongs_to,
+        }, tx);
+
+        await tx.execute(sql`
+          INSERT INTO pm_po_settlements (id, booking_id, property_id, from_user_id, to_user_id, amount, reason, collected_by, status, notes, created_at, updated_at)
+          VALUES (gen_random_uuid()::text, ${id}, ${booking.property_id},
+            ${booking.pm_user_id}, ${booking.guest_user_id || booking.pm_user_id},
+            ${totalRefund.toFixed(2)}, 'guest_refund', 'property_manager', 'pending',
+            ${'Cancellation refund: ' + sanitize(reason)},
+            NOW(), NOW())
         `);
       }
-    }
-
-    // 4. Create refund settlement if money was collected (confirmed bookings)
-    if (totalRefund > 0 && booking.status === "confirmed") {
-      await recordBookingRefund({
-        id: booking.id,
-        propertyId: booking.property_id,
-        refundAmount: totalRefund.toFixed(2),
-        bankAccountBelongsTo: booking.bank_account_belongs_to,
-      });
-
-      // Create guest refund settlement — PM owes guest
-      await db.execute(sql`
-        INSERT INTO pm_po_settlements (id, booking_id, property_id, from_user_id, to_user_id, amount, reason, collected_by, status, notes, created_at, updated_at)
-        VALUES (gen_random_uuid()::text, ${id}, ${booking.property_id},
-          ${booking.pm_user_id}, ${booking.guest_user_id || booking.pm_user_id},
-          ${totalRefund.toFixed(2)}, 'guest_refund', 'property_manager', 'pending',
-          ${'Cancellation refund: ' + sanitize(reason)},
-          NOW(), NOW())
-      `);
-    }
+    });
 
     // 5. Notify other party
     const notifyUserId = isGuest ? booking.pm_user_id : booking.guest_user_id;
@@ -945,14 +871,14 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
     const resolvedId = (userRole === "PROPERTY_MANAGER" || userRole === "PM_TEAM_MEMBER")
       ? await getPmUserId(req) : userId;
 
-    // Verify access
+    // Verify access (SA bypasses ownership check)
     const propCheck = await db.execute(sql`
       SELECT pm_user_id, po_user_id FROM st_properties WHERE id = ${propertyId}
     `);
     if (propCheck.rows.length === 0) return res.status(404).json({ error: "Property not found" });
 
     const prop = propCheck.rows[0] as any;
-    if (prop.pm_user_id !== resolvedId && prop.po_user_id !== userId) {
+    if (userRole !== "SUPER_ADMIN" && prop.pm_user_id !== resolvedId && prop.po_user_id !== userId) {
       return res.status(403).json({ error: "Access denied" });
     }
 
@@ -986,7 +912,7 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
         (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
         (SELECT id FROM st_reviews WHERE booking_id = b.id LIMIT 1) AS "reviewId"
       FROM st_bookings b
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       JOIN st_properties p ON p.id = b.property_id
       LEFT JOIN areas a ON a.id = p.area_id
       WHERE b.property_id = ${propertyId}
@@ -1008,9 +934,12 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
 });
 
 // ── GET /api/bookings/property/:propertyId/calendar ───
-router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+router.get("/property/:propertyId/calendar", requireAuth, async (req: Request, res: Response) => {
   try {
-    const pmId = await getPmUserId(req);
+    const userRole = req.session.userRole!;
+    const pmId = userRole === "SUPER_ADMIN"
+      ? ((await db.execute(sql`SELECT pm_user_id FROM st_properties WHERE id = ${req.params.propertyId} LIMIT 1`)).rows[0] as any)?.pm_user_id
+      : await getPmUserId(req);
     const { propertyId } = req.params;
     const { from, to } = req.query as Record<string, string>;
 
@@ -1028,7 +957,7 @@ router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER", "PM
         b.guest_name AS "manualGuestName", b.source,
         g.full_name AS "guestFullName"
       FROM st_bookings b
-      LEFT JOIN guests g ON g.user_id = b.guest_user_id
+      LEFT JOIN users g ON g.id = b.guest_user_id
       WHERE b.property_id = ${propertyId}
       AND b.status IN ('requested', 'confirmed', 'checked_in', 'checked_out', 'completed')
       AND b.check_in_date <= ${endDate}
@@ -1058,91 +987,7 @@ router.get("/property/:propertyId/calendar", requireRole("PROPERTY_MANAGER", "PM
 });
 
 // ── PATCH /api/bookings/:id/confirm ───────────────────
-router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
-  try {
-    const userId = req.session.userId!;
-    const { id } = req.params;
-    const pmId = await getPmUserId(req);
-
-    const bookingResult = await db.execute(sql`
-      SELECT b.*, p.public_name AS property_name
-      FROM st_bookings b JOIN st_properties p ON p.id = b.property_id
-      WHERE b.id = ${id} AND b.pm_user_id = ${pmId}
-    `);
-
-    if (bookingResult.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
-
-    const booking = bookingResult.rows[0] as any;
-    if (booking.status !== "requested") {
-      return res.status(400).json({ error: `Cannot confirm a booking with status: ${booking.status}` });
-    }
-
-    // Track who confirmed / collected cash
-    const cashCollectedBy = booking.payment_method === "cash" ? userId : null;
-
-    await db.execute(sql`
-      UPDATE st_bookings SET status = 'confirmed', confirmed_at = NOW(),
-        payment_status = 'paid',
-        cash_collected_by_user_id = ${cashCollectedBy},
-        updated_at = NOW()
-      WHERE id = ${id}
-    `);
-
-    // Record financial transactions
-    await recordBookingIncome({
-      id: booking.id,
-      propertyId: booking.property_id,
-      subtotal: booking.subtotal,
-      cleaningFee: booking.cleaning_fee,
-      tourismTax: booking.tourism_tax,
-      vat: booking.vat,
-      securityDepositAmount: booking.security_deposit_amount,
-      commissionType: booking.commission_type,
-      commissionValue: booking.commission_value,
-      commissionAmount: booking.commission_amount,
-      bankAccountBelongsTo: booking.bank_account_belongs_to,
-    });
-
-    // Create settlement records (PM↔PO reconciliation)
-    createBookingSettlements(id).catch(err => console.error("[Settlements] Error:", err));
-
-    // Notify guest
-    if (booking.guest_user_id) {
-      await createNotification({
-        userId: booking.guest_user_id,
-        type: "BOOKING_CONFIRMED",
-        title: "Booking confirmed!",
-        body: `Your booking at ${booking.property_name || "a property"} has been confirmed.`,
-        linkUrl: `/portal/my-bookings/${id}`,
-        relatedId: id,
-      });
-    }
-
-    // Notify PM when team member performs action
-    const userRole = req.session.userRole;
-    if (userRole === "PM_TEAM_MEMBER") {
-      // Notify the parent PM
-      await createNotification({
-        userId: pmId,
-        type: "BOOKING_CONFIRMED",
-        title: "Team member confirmed booking",
-        body: `A team member confirmed a booking at ${booking.property_name || "a property"}.`,
-        linkUrl: `/portal/my-bookings`,
-        relatedId: id,
-      });
-    }
-
-    await logPropertyActivity(
-      booking.property_id, userId, "booking_confirmed",
-      `Booking confirmed`, { bookingId: id }
-    );
-
-    return res.json({ status: "confirmed" });
-  } catch (error: any) {
-    console.error("[Bookings] PATCH confirm error:", error);
-    return res.status(500).json({ error: "Failed to confirm booking" });
-  }
-});
+router.patch("/:id/confirm", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), confirmBookingHandler);
 
 // ── PATCH /api/bookings/:id/decline ───────────────────
 router.patch("/:id/decline", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), async (req: Request, res: Response) => {
@@ -1199,7 +1044,7 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
   try {
     const userId = req.session.userId!;
     const {
-      propertyId, guestName, guestEmail, guestPhone,
+      propertyId, guestUserId, guestName, guestEmail, guestPhone,
       checkIn, checkOut, guests, source, externalRef,
       paymentMethod, totalAmountOverride, notes,
     } = req.body;
@@ -1263,6 +1108,14 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
     const securityDeposit = prop.security_deposit_required ? parseFloat(prop.security_deposit_amount || "0") : 0;
     const nightlyTotal = (weekdayNights * nightlyRate) + (weekendNights * weekendRate);
 
+    // Validate override amount
+    if (totalAmountOverride !== undefined) {
+      const overrideVal = parseFloat(totalAmountOverride);
+      if (isNaN(overrideVal) || overrideVal <= 0) {
+        return res.status(400).json({ error: "Total amount override must be a positive number" });
+      }
+    }
+
     const taxResult = await db.execute(sql`
       SELECT tourism_tax_percent, vat_percent FROM pm_settings WHERE pm_user_id = ${userId} LIMIT 1
     `);
@@ -1275,70 +1128,98 @@ router.post("/manual", requireRole("PROPERTY_MANAGER"), async (req: Request, res
 
     let commissionAmount = "0";
     if (prop.commission_type === "percentage_per_booking" && prop.commission_value) {
-      commissionAmount = (subtotal * (parseFloat(prop.commission_value) / 100)).toFixed(2);
+      const commissionPct = parseFloat(prop.commission_value);
+      if (commissionPct > 100) {
+        return res.status(400).json({ error: "Commission percentage cannot exceed 100%" });
+      }
+      commissionAmount = (subtotal * (commissionPct / 100)).toFixed(2);
+      if (parseFloat(commissionAmount) > subtotal) {
+        return res.status(400).json({ error: "Commission amount cannot exceed booking subtotal" });
+      }
     }
     const ownerPayoutAmount = (totalAmountOverride ? (total - parseFloat(commissionAmount)) : (rentalIncome - parseFloat(commissionAmount))).toFixed(2);
 
     const bookingId = crypto.randomUUID();
     const validSource = source || "other";
 
-    await db.execute(sql`
-      INSERT INTO st_bookings (
-        id, property_id, pm_user_id, source, status,
-        check_in_date, check_out_date, number_of_guests, total_nights,
-        weekday_nights, weekend_nights,
-        nightly_rate, weekend_rate, cleaning_fee, tourism_tax, vat,
-        subtotal, total_amount, security_deposit_amount,
-        payment_method, payment_status, cancellation_policy,
-        commission_type, commission_value, commission_amount,
-        bank_account_belongs_to, owner_payout_amount, owner_payout_status,
-        pm_notes, external_booking_ref, guest_name, guest_email, guest_phone,
-        confirmed_at, created_at, updated_at
-      ) VALUES (
-        ${bookingId}, ${propertyId}, ${userId},
-        ${sql.raw(`'${validSource}'::st_booking_source`)}, 'confirmed',
-        ${checkIn}, ${checkOut}, ${guests}, ${totalNights},
-        ${weekdayNights}, ${weekendNights},
-        ${nightlyRate.toFixed(2)}, ${weekendRate.toFixed(2)},
-        ${cleaningFee.toFixed(2)}, ${tourismTax.toFixed(2)}, ${vat.toFixed(2)},
-        ${subtotal.toFixed(2)}, ${total.toFixed(2)},
-        ${securityDeposit > 0 ? securityDeposit.toFixed(2) : null},
-        ${paymentMethod ? sql.raw(`'${paymentMethod}'::st_booking_payment_method`) : sql`NULL`},
-        'paid',
-        ${prop.cancellation_policy ? sql.raw(`'${prop.cancellation_policy}'::st_cancellation_policy`) : sql`NULL`},
-        ${prop.commission_type ? sql.raw(`'${prop.commission_type}'::st_commission_type`) : sql`NULL`},
-        ${prop.commission_value || null}, ${commissionAmount},
-        ${prop.bank_account_belongs_to ? sql.raw(`'${prop.bank_account_belongs_to}'::st_bank_account_belongs_to`) : sql`NULL`},
-        ${ownerPayoutAmount}, 'pending',
-        ${notes || null}, ${externalRef || null},
-        ${guestName || null}, ${guestEmail || null}, ${guestPhone || null},
-        NOW(), NOW(), NOW()
-      )
-    `);
+    // Atomic: booking row + financial ledger entries in a single transaction
+    await withTransaction(async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO st_bookings (
+          id, property_id, pm_user_id, source, status,
+          check_in_date, check_out_date, number_of_guests, total_nights,
+          weekday_nights, weekend_nights,
+          nightly_rate, weekend_rate, cleaning_fee, tourism_tax, vat,
+          subtotal, total_amount, security_deposit_amount,
+          payment_method, payment_status, cancellation_policy,
+          commission_type, commission_value, commission_amount,
+          bank_account_belongs_to, owner_payout_amount, owner_payout_status,
+          pm_notes, external_booking_ref, guest_user_id, guest_name, guest_email, guest_phone,
+          confirmed_at, created_at, updated_at
+        ) VALUES (
+          ${bookingId}, ${propertyId}, ${userId},
+          ${sql.raw(`'${validSource}'::st_booking_source`)}, 'confirmed',
+          ${checkIn}, ${checkOut}, ${guests}, ${totalNights},
+          ${weekdayNights}, ${weekendNights},
+          ${nightlyRate.toFixed(2)}, ${weekendRate.toFixed(2)},
+          ${cleaningFee.toFixed(2)}, ${tourismTax.toFixed(2)}, ${vat.toFixed(2)},
+          ${subtotal.toFixed(2)}, ${total.toFixed(2)},
+          ${securityDeposit > 0 ? securityDeposit.toFixed(2) : null},
+          ${paymentMethod ? sql.raw(`'${paymentMethod}'::st_booking_payment_method`) : sql`NULL`},
+          'paid',
+          ${prop.cancellation_policy ? sql.raw(`'${prop.cancellation_policy}'::st_cancellation_policy`) : sql`NULL`},
+          ${prop.commission_type ? sql.raw(`'${prop.commission_type}'::st_commission_type`) : sql`NULL`},
+          ${prop.commission_value || null}, ${commissionAmount},
+          ${prop.bank_account_belongs_to ? sql.raw(`'${prop.bank_account_belongs_to}'::st_bank_account_belongs_to`) : sql`NULL`},
+          ${ownerPayoutAmount}, 'pending',
+          ${notes || null}, ${externalRef || null},
+          ${guestUserId || null}, ${guestName || null}, ${guestEmail || null}, ${guestPhone || null},
+          NOW(), NOW(), NOW()
+        )
+      `);
 
-    // Record financial transactions
-    await recordBookingIncome({
-      id: bookingId,
-      propertyId,
-      subtotal: subtotal.toFixed(2),
-      cleaningFee: cleaningFee.toFixed(2),
-      tourismTax: tourismTax.toFixed(2),
-      vat: vat.toFixed(2),
-      securityDepositAmount: securityDeposit > 0 ? securityDeposit.toFixed(2) : null,
-      commissionType: prop.commission_type,
-      commissionValue: prop.commission_value,
-      commissionAmount,
-      bankAccountBelongsTo: prop.bank_account_belongs_to,
+      await recordBookingIncome({
+        id: bookingId,
+        propertyId,
+        subtotal: subtotal.toFixed(2),
+        cleaningFee: cleaningFee.toFixed(2),
+        tourismTax: tourismTax.toFixed(2),
+        vat: vat.toFixed(2),
+        securityDepositAmount: securityDeposit > 0 ? securityDeposit.toFixed(2) : null,
+        commissionType: prop.commission_type,
+        commissionValue: prop.commission_value,
+        commissionAmount,
+        bankAccountBelongsTo: prop.bank_account_belongs_to,
+      }, tx);
     });
-
-    // Create settlement records
-    createBookingSettlements(bookingId).catch(err => console.error("[Settlements] Error:", err));
 
     await logPropertyActivity(
       propertyId, userId, "booking_created",
       `Manual booking added: ${guestName || "Guest"} (${source || "other"})`,
       { bookingId, checkIn, checkOut, source: validSource }
     );
+
+    // Emit event — lifecycle service handles settlements, notifications, and message templates
+    const pmInfo = await db.execute(sql`SELECT full_name, phone FROM users WHERE id = ${userId} LIMIT 1`);
+    const pmRow = pmInfo.rows[0] as any;
+    const propAddrResult = await db.execute(sql`SELECT address_line_1, city FROM st_properties WHERE id = ${propertyId} LIMIT 1`);
+    const propAddr = propAddrResult.rows[0] as any;
+    bookingEmitter.emit("booking:confirmed", {
+      bookingId,
+      pmUserId: userId,
+      guestUserId: guestUserId || null,
+      guestName: guestName || "Guest",
+      propertyId,
+      propertyName: prop.public_name || "the property",
+      propertyAddress: [propAddr?.address_line_1, propAddr?.city].filter(Boolean).join(", "),
+      pmName: pmRow?.full_name || "Your Property Manager",
+      pmPhone: pmRow?.phone || "",
+      checkInDate: checkIn,
+      checkOutDate: checkOut,
+      totalNights,
+      totalAmount: total.toFixed(2),
+      accessPin: null,
+    });
 
     return res.status(201).json({ id: bookingId, status: "confirmed" });
   } catch (error: any) {
@@ -1405,16 +1286,35 @@ router.patch("/:id/check-in", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"),
       WHERE id = ${id}
     `);
 
-    if (booking.guest_user_id) {
-      await createNotification({
-        userId: booking.guest_user_id,
-        type: "BOOKING_CHECKIN",
-        title: "Check-in confirmed",
-        body: `You have been checked in at ${booking.property_name || "your property"}.${accessPin ? ` Your access pin is: ${accessPin}` : ""}`,
-        linkUrl: `/portal/my-bookings/${id}`,
-        relatedId: id,
-      });
-    }
+    // Fetch context for side-effects, then emit — lifecycle service handles notifications + templates
+    const [guestNameResult, pmInfoResult, propInfoResult] = await Promise.all([
+      booking.guest_user_id
+        ? db.execute(sql`SELECT full_name FROM users WHERE id = ${booking.guest_user_id} LIMIT 1`)
+        : Promise.resolve({ rows: [] }),
+      db.execute(sql`SELECT full_name, phone FROM users WHERE id = ${pmId} LIMIT 1`),
+      db.execute(sql`SELECT address_line_1, city FROM st_properties WHERE id = ${booking.property_id} LIMIT 1`),
+    ]);
+    const guestName = (guestNameResult.rows[0] as any)?.full_name || "Guest";
+    const pmInfo = pmInfoResult.rows[0] as any;
+    const propInfo = propInfoResult.rows[0] as any;
+    bookingEmitter.emit("booking:checked_in", {
+      bookingId: id,
+      pmUserId: pmId,
+      guestUserId: booking.guest_user_id || null,
+      guestName,
+      propertyId: booking.property_id,
+      propertyName: booking.property_name || "the property",
+      propertyAddress: [propInfo?.address_line_1, propInfo?.city].filter(Boolean).join(", "),
+      pmName: pmInfo?.full_name || "Your Property Manager",
+      pmPhone: pmInfo?.phone || "",
+      checkInDate: booking.check_in_date,
+      checkOutDate: booking.check_out_date,
+      checkInTime: booking.check_in_time,
+      checkOutTime: booking.check_out_time,
+      totalNights: booking.total_nights,
+      totalAmount: booking.total_amount || "0",
+      accessPin,
+    });
 
     await logPropertyActivity(
       booking.property_id, userId, "booking_checked_in",
@@ -1467,25 +1367,31 @@ router.patch("/:id/check-out", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER")
       WHERE id = ${id}
     `);
 
-    if (booking.guest_user_id) {
-      await createNotification({
-        userId: booking.guest_user_id,
-        type: "BOOKING_CHECKOUT",
-        title: "Check-out completed",
-        body: `Check-out completed at ${booking.property_name || "your property"}. Thank you for your stay!`,
-        linkUrl: `/portal/my-bookings/${id}`,
-        relatedId: id,
-      });
-    }
+    const pmId = await getPmUserId(req);
+    const guestNameResult = booking.guest_user_id
+      ? await db.execute(sql`SELECT full_name FROM users WHERE id = ${booking.guest_user_id} LIMIT 1`)
+      : { rows: [] };
+    const guestName = (guestNameResult.rows[0] as any)?.full_name || "Guest";
+
+    // Emit — lifecycle service handles guest notification, post_checkout template, cleaning automation
+    bookingEmitter.emit("booking:checked_out", {
+      bookingId: id,
+      pmUserId: pmId,
+      guestUserId: booking.guest_user_id || null,
+      guestName,
+      propertyId: booking.property_id,
+      propertyName: booking.property_name || "the property",
+      checkInDate: booking.check_in_date,
+      checkOutDate: booking.check_out_date,
+      checkInTime: booking.check_in_time,
+      checkOutTime: booking.check_out_time,
+      totalNights: booking.total_nights,
+    });
 
     await logPropertyActivity(
       booking.property_id, userId, "booking_checked_out",
       `Guest checked out`, { bookingId: id }
     );
-
-    // Trigger cleaning automation rules
-    triggerCleaningAutomation(booking.property_id, booking.pm_user_id, id)
-      .catch(err => console.error("[Cleaning Automation] Error:", err));
 
     return res.json({ status: "checked_out" });
   } catch (error: any) {
@@ -1510,6 +1416,27 @@ router.patch("/:id/complete", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"),
     const booking = bookingResult.rows[0] as any;
     if (booking.status !== "checked_out") {
       return res.status(400).json({ error: `Cannot complete a booking with status: ${booking.status}` });
+    }
+
+    // Block completion if security deposit hasn't been processed
+    const depositCheck = await db.execute(sql`
+      SELECT status FROM st_security_deposits WHERE booking_id = ${id} LIMIT 1
+    `);
+    if (depositCheck.rows.length > 0) {
+      const depStatus = (depositCheck.rows[0] as any).status;
+      if (!["returned", "partially_returned", "forfeited"].includes(depStatus)) {
+        return res.status(400).json({ error: "Security deposit must be processed (returned or forfeited) before completing this booking" });
+      }
+    }
+
+    // Block completion if any settlement is still pending (unresolved money owed)
+    const settlementCheck = await db.execute(sql`
+      SELECT id FROM pm_po_settlements
+      WHERE booking_id = ${id} AND status = 'pending'
+      LIMIT 1
+    `);
+    if (settlementCheck.rows.length > 0) {
+      return res.status(400).json({ error: "Outstanding settlement must be paid before completing this booking" });
     }
 
     await db.execute(sql`
@@ -1567,46 +1494,65 @@ router.post("/block-dates", requireRole("PROPERTY_MANAGER"), async (req: Request
     `);
     if (propCheck.rows.length === 0) return res.status(403).json({ error: "Access denied" });
 
-    // Check for conflicts with confirmed/checked-in bookings
-    const confirmedConflict = await db.execute(sql`
-      SELECT id, check_in_date, check_out_date, guest_name,
-        (SELECT full_name FROM guests WHERE user_id = guest_user_id LIMIT 1) AS guest_full_name
-      FROM st_bookings
-      WHERE property_id = ${propertyId}
-      AND status IN ('confirmed', 'checked_in')
-      AND check_in_date < ${endDate}
-      AND check_out_date > ${startDate}
-    `);
-    if (confirmedConflict.rows.length > 0) {
-      const conflicting = (confirmedConflict.rows as any[]).map(b => ({
-        id: b.id,
-        guestName: b.guest_full_name || b.guest_name || "Guest",
-        checkIn: b.check_in_date,
-        checkOut: b.check_out_date,
-      }));
-      return res.status(409).json({
-        error: "Cannot block dates that overlap with confirmed bookings",
-        conflicts: conflicting,
-      });
-    }
+    // Use a transaction + FOR UPDATE to prevent a booking sneaking in while we're blocking
+    let conflicting: any[] = [];
+    let autoDeclined: any[] = [];
+    let blockId = crypto.randomUUID();
 
-    // Auto-decline overlapping requested bookings
-    const overlapping = await db.execute(sql`
-      SELECT id, guest_user_id, guest_name FROM st_bookings
-      WHERE property_id = ${propertyId}
-      AND status = 'requested'
-      AND check_in_date < ${endDate}
-      AND check_out_date > ${startDate}
-    `);
-
-    for (const booking of overlapping.rows as any[]) {
-      await db.execute(sql`
-        UPDATE st_bookings SET status = 'declined',
-          declined_at = NOW(), decline_reason = 'Dates blocked by host',
-          updated_at = NOW()
-        WHERE id = ${booking.id}
+    await withTransaction(async (tx) => {
+      // Lock overlapping confirmed/checked-in bookings rows
+      const confirmedConflict = await tx.execute(sql`
+        SELECT id, check_in_date, check_out_date, guest_name,
+          (SELECT full_name FROM users WHERE id = guest_user_id LIMIT 1) AS guest_full_name
+        FROM st_bookings
+        WHERE property_id = ${propertyId}
+        AND status IN ('confirmed', 'checked_in')
+        AND check_in_date < ${endDate}
+        AND check_out_date > ${startDate}
+        FOR UPDATE
       `);
 
+      if (confirmedConflict.rows.length > 0) {
+        conflicting = (confirmedConflict.rows as any[]).map(b => ({
+          id: b.id,
+          guestName: b.guest_full_name || b.guest_name || "Guest",
+          checkIn: b.check_in_date,
+          checkOut: b.check_out_date,
+        }));
+        throw Object.assign(new Error("CONFLICT"), { conflicting });
+      }
+
+      // Lock and auto-decline overlapping requested bookings atomically
+      const overlapping = await tx.execute(sql`
+        SELECT id, guest_user_id, guest_name FROM st_bookings
+        WHERE property_id = ${propertyId}
+        AND status = 'requested'
+        AND check_in_date < ${endDate}
+        AND check_out_date > ${startDate}
+        FOR UPDATE
+      `);
+
+      for (const booking of overlapping.rows as any[]) {
+        await tx.execute(sql`
+          UPDATE st_bookings SET status = 'declined',
+            declined_at = NOW(), decline_reason = 'Dates blocked by host',
+            updated_at = NOW()
+          WHERE id = ${booking.id}
+        `);
+        autoDeclined.push(booking);
+      }
+
+      await tx.execute(sql`
+        INSERT INTO st_blocked_dates (id, property_id, start_date, end_date, reason, blocked_by, created_at)
+        VALUES (${blockId}, ${propertyId}, ${startDate}, ${endDate}, ${reason || null}, ${userId}, NOW())
+      `);
+    });
+
+    // Note: conflict case is handled below in catch block
+    void conflicting; // referenced in catch
+
+    // Notifications + activity logs outside the transaction (non-critical)
+    for (const booking of autoDeclined) {
       if (booking.guest_user_id) {
         await createNotification({
           userId: booking.guest_user_id,
@@ -1615,24 +1561,29 @@ router.post("/block-dates", requireRole("PROPERTY_MANAGER"), async (req: Request
           body: "Your booking request was declined because the dates have been blocked.",
           linkUrl: `/portal/my-bookings/${booking.id}`,
           relatedId: booking.id,
-        });
+        }).catch(() => {});
       }
+      await logPropertyActivity(
+        propertyId, userId, "booking_declined",
+        `Booking auto-declined due to date block (guest: ${booking.guest_name || "unknown"})`,
+        { bookingId: booking.id, reason: "date_block" }
+      ).catch(() => {});
     }
-
-    const blockId = crypto.randomUUID();
-    await db.execute(sql`
-      INSERT INTO st_blocked_dates (id, property_id, start_date, end_date, reason, blocked_by, created_at)
-      VALUES (${blockId}, ${propertyId}, ${startDate}, ${endDate}, ${reason || null}, ${userId}, NOW())
-    `);
 
     await logPropertyActivity(
       propertyId, userId, "date_blocked",
       `Dates blocked: ${startDate} to ${endDate}${reason ? ` (${reason})` : ""}`,
-      { blockId, startDate, endDate, declinedBookings: (overlapping.rows as any[]).length }
+      { blockId, startDate, endDate, declinedBookings: autoDeclined.length }
     );
 
     return res.status(201).json({ id: blockId });
   } catch (error: any) {
+    if (error.message === "CONFLICT") {
+      return res.status(409).json({
+        error: "Cannot block dates that overlap with confirmed bookings",
+        conflicts: error.conflicting,
+      });
+    }
     console.error("[Bookings] POST block-dates error:", error);
     return res.status(500).json({ error: "Failed to block dates" });
   }
@@ -1769,18 +1720,21 @@ router.patch("/:id/payout", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), r
       return res.status(400).json({ error: "Owner payout already completed" });
     }
 
-    await db.execute(sql`
-      UPDATE st_bookings SET
-        owner_payout_status = 'paid',
-        owner_payout_date = NOW(),
-        updated_at = NOW()
-      WHERE id = ${id}
-    `);
+    // Atomic: update booking status + record financial transaction together
+    await withTransaction(async (tx) => {
+      await tx.execute(sql`
+        UPDATE st_bookings SET
+          owner_payout_status = 'paid',
+          owner_payout_date = NOW(),
+          updated_at = NOW()
+        WHERE id = ${id}
+      `);
 
-    await recordOwnerPayout({
-      bookingId: id,
-      propertyId: booking.property_id,
-      amount: booking.owner_payout_amount,
+      await recordOwnerPayout({
+        bookingId: id,
+        propertyId: booking.property_id,
+        amount: booking.owner_payout_amount,
+      }, tx);
     });
 
     await logPropertyActivity(
@@ -1846,8 +1800,8 @@ router.post("/:id/review", requireAuth, async (req: Request, res: Response) => {
     }
 
     return res.status(201).json({ id: reviewId });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1858,13 +1812,64 @@ router.get("/:id/review", requireAuth, async (req: Request, res: Response) => {
     const result = await db.execute(sql`
       SELECT r.*, g.full_name AS "guestName"
       FROM st_reviews r
-      LEFT JOIN guests g ON g.user_id = r.guest_user_id
+      LEFT JOIN users g ON g.id = r.guest_user_id
       WHERE r.booking_id = ${id}
     `);
     if (result.rows.length === 0) return res.status(404).json({ error: "No review" });
     return res.json(result.rows[0]);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Failed to fetch review" });
+  }
+});
+
+// ── PATCH /api/bookings/:id/review/response — PM responds to a guest review
+router.patch("/:id/review/response", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), async (req: Request, res: Response) => {
+  try {
+    const pmId = await getPmUserId(req);
+    const { id } = req.params;
+    const { response } = req.body;
+
+    if (!response?.trim()) {
+      return res.status(400).json({ error: "Response text is required" });
+    }
+
+    // Verify the booking belongs to this PM
+    const bookingCheck = await db.execute(sql`
+      SELECT pm_user_id FROM st_bookings WHERE id = ${id} LIMIT 1
+    `);
+    if (bookingCheck.rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+    if ((bookingCheck.rows[0] as any).pm_user_id !== pmId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const reviewCheck = await db.execute(sql`
+      SELECT id, guest_user_id FROM st_reviews WHERE booking_id = ${id} LIMIT 1
+    `);
+    if (reviewCheck.rows.length === 0) return res.status(404).json({ error: "No review found for this booking" });
+
+    const review = reviewCheck.rows[0] as any;
+
+    await db.execute(sql`
+      UPDATE st_reviews
+      SET pm_response = ${sanitize(response)}, pm_responded_at = NOW()
+      WHERE booking_id = ${id}
+    `);
+
+    // Notify the guest
+    if (review.guest_user_id) {
+      await createNotification({
+        userId: review.guest_user_id,
+        type: "BOOKING_CONFIRMED",
+        title: "Property manager responded to your review",
+        body: sanitize(response).slice(0, 100),
+        linkUrl: `/portal/my-bookings?id=${id}`,
+        relatedId: review.id,
+      });
+    }
+
+    return res.json({ ok: true });
+  } catch {
+    return res.status(500).json({ error: "Failed to save response" });
   }
 });
 

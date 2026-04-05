@@ -50,8 +50,8 @@ router.get("/", async (req: Request, res: Response) => {
       limit,
       offset,
     });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -71,8 +71,8 @@ router.get("/unread-count", async (req: Request, res: Response) => {
       );
 
     return res.json({ count: result.count });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -92,8 +92,8 @@ router.patch("/:id/read", async (req: Request, res: Response) => {
       );
 
     return res.json({ ok: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -113,8 +113,8 @@ router.patch("/read-all", async (req: Request, res: Response) => {
       );
 
     return res.json({ ok: true });
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+  } catch {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
