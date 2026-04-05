@@ -10,10 +10,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
       - name: Deploy to EC2
+        uses: easingthemes/ssh-deploy@v5
+        with:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.EC2_HOST }}
+          REMOTE_USER: ubuntu
+          TARGET: /home/ubuntu/nestquest/
+          SOURCE: ./
+          EXCLUDE: "node_modules/, .git/, .github/"
+
+      - name: Install deps and restart on EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          script: /home/ubuntu/nestquest/scripts/deploy.sh
+          command_timeout: 5m
+          script: |
+            cd /home/ubuntu/nestquest
+            export $(cat .env | grep -v '^#' | xargs)
+            npm ci --omit=dev
+            npx drizzle-kit push --force || true
+            pm2 reload nestquest --update-env || pm2 start ecosystem.config.cjs --env production
+            pm2 save
