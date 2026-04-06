@@ -223,6 +223,23 @@ bookingEmitter.on("booking:checked_out", async (p: BookingCheckedOutPayload) => 
 
 // ── booking:cancelled ─────────────────────────────────
 bookingEmitter.on("booking:cancelled", async (p: BookingCancelledPayload) => {
+  // Notify PO that a booking at their property was cancelled
+  try {
+    const poUserId = await getPoUserId(p.propertyId);
+    if (poUserId) {
+      await createNotification({
+        userId: poUserId,
+        type: "BOOKING_CANCELLED",
+        title: "Booking cancelled",
+        body: `A booking at ${p.propertyName} was cancelled.`,
+        linkUrl: `/portal/po-properties`,
+        relatedId: p.bookingId,
+      });
+    }
+  } catch (err) {
+    console.error("[Lifecycle] booking:cancelled PO notification error:", err);
+  }
+
   if (!p.guestUserId) return;
 
   try {
@@ -235,7 +252,7 @@ bookingEmitter.on("booking:cancelled", async (p: BookingCancelledPayload) => {
       relatedId: p.bookingId,
     });
   } catch (err) {
-    console.error("[Lifecycle] booking:cancelled notification error:", err);
+    console.error("[Lifecycle] booking:cancelled guest notification error:", err);
   }
 });
 

@@ -12,7 +12,7 @@ router.use(requireAuth);
 const TYPE_FILTERS: Record<string, string[]> = {
   messages: ["NEW_MESSAGE"],
   invites: ["LINK_INVITE", "LINK_ACCEPTED", "LINK_REJECTED", "LINK_REMOVED"],
-  system: ["USER_SIGNUP", "KYC_SUBMISSION"],
+  system: ["USER_SIGNUP", "KYC_SUBMISSION", "KYC_VERIFIED", "KYC_REJECTED", "SYSTEM_ALERT"],
 };
 
 // ── GET /api/notifications ─────────────────────────────

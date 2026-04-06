@@ -296,6 +296,27 @@ router.patch("/users/:id/kyc", async (req: Request, res: Response) => {
       ipAddress: req.ip,
     });
 
+    // Notify the user of the outcome (only on terminal states)
+    if (kycStatus === "verified") {
+      await createNotification({
+        userId: id,
+        type: "KYC_VERIFIED",
+        title: "Identity verified",
+        body: "Your identity verification has been approved. You can now make bookings.",
+        linkUrl: "/portal/settings",
+        relatedId: id,
+      });
+    } else if (kycStatus === "rejected") {
+      await createNotification({
+        userId: id,
+        type: "KYC_REJECTED",
+        title: "Identity verification rejected",
+        body: "Your identity verification was not approved. Please re-upload your documents or contact support.",
+        linkUrl: "/portal/settings",
+        relatedId: id,
+      });
+    }
+
     return res.json({ message: `KYC status updated to ${kycStatus}` });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -1009,15 +1030,14 @@ router.get("/properties", async (req: Request, res: Response) => {
       SELECT p.id, p.public_name AS "publicName", p.status, p.city,
         p.property_type AS "propertyType", p.bedrooms, p.bathrooms,
         p.nightly_rate AS "nightlyRate",
-        pm_g.full_name AS "pmName", pm_u.email AS "pmEmail",
-        po_g.full_name AS "ownerName",
+        pm.full_name AS "pmName", pm.email AS "pmEmail",
+        po.full_name AS "ownerName",
         (SELECT COUNT(*)::int FROM st_bookings b WHERE b.property_id = p.id) AS "bookingCount",
         (SELECT COUNT(*)::int FROM st_reviews r WHERE r.property_id = p.id) AS "reviewCount",
         (SELECT COALESCE(AVG(r.rating), 0) FROM st_reviews r WHERE r.property_id = p.id) AS "avgRating"
       FROM st_properties p
-      LEFT JOIN users pm_g ON pm_g.id = p.pm_user_id
-      LEFT JOIN users pm_u ON pm_u.id = p.pm_user_id
-      LEFT JOIN users po_g ON po_g.id = p.po_user_id
+      LEFT JOIN users pm ON pm.id = p.pm_user_id
+      LEFT JOIN users po ON po.id = p.po_user_id
       ORDER BY p.created_at DESC
     `);
     return res.json(result.rows);

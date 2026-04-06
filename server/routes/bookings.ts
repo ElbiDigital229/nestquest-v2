@@ -120,9 +120,10 @@ router.get("/my", requireAuth, async (req: Request, res: Response) => {
     const userRole = req.session.userRole!;
     const status = req.query.status as string;
 
+    const validStatuses = ["requested", "confirmed", "checked_in", "checked_out", "completed", "cancelled", "declined", "expired"];
     let statusFilter = sql``;
-    if (status && status !== "all") {
-      statusFilter = sql` AND b.status = ${sql.raw(`'${status}'::st_booking_status`)}`;
+    if (status && status !== "all" && validStatuses.includes(status)) {
+      statusFilter = sql` AND b.status = ${status}::st_booking_status`;
     }
 
     // PM/team sees managed bookings; PO sees bookings for owned properties; Guest sees own
@@ -890,9 +891,10 @@ router.get("/property/:propertyId", requireAuth, requirePmPermission("bookings.v
       return res.status(403).json({ error: "Access denied" });
     }
 
+    const validStatuses = ["requested", "confirmed", "checked_in", "checked_out", "completed", "cancelled", "declined", "expired"];
     let statusFilter = sql``;
-    if (status && status !== "all") {
-      statusFilter = sql` AND b.status = ${sql.raw(`'${status}'::st_booking_status`)}`;
+    if (status && status !== "all" && validStatuses.includes(status)) {
+      statusFilter = sql` AND b.status = ${status}::st_booking_status`;
     }
 
     const result = await db.execute(sql`
