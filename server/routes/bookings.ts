@@ -1816,7 +1816,7 @@ router.get("/:id/review", requireAuth, async (req: Request, res: Response) => {
 });
 
 // ── PATCH /api/bookings/:id/review/response — PM responds to a guest review
-router.patch("/:id/review/response", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), validate(reviewResponseSchema), async (req: Request, res: Response) => {
+router.patch("/:id/review/response", requireRole("PROPERTY_MANAGER", "PM_TEAM_MEMBER"), requirePmPermission("bookings.manage"), validate(reviewResponseSchema), async (req: Request, res: Response) => {
   try {
     const pmId = await getPmUserId(req);
     const { id } = req.params;

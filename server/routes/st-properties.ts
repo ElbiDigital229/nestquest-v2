@@ -956,7 +956,7 @@ router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request
 
 // ── DELETE /:id — Delete a draft property ──
 
-router.delete("/:id", async (req: Request, res: Response) => {
+router.delete("/:id", requirePmPermission("properties.delete"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) {
       return res.status(403).json({ error: "Access denied" });
@@ -1000,7 +1000,7 @@ router.delete("/:id", async (req: Request, res: Response) => {
 
 // ── POST /:id/publish — Go Live ──
 
-router.post("/:id/publish", async (req: Request, res: Response) => {
+router.post("/:id/publish", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) {
       return res.status(403).json({ error: "Access denied" });
@@ -1093,7 +1093,7 @@ router.post("/:id/publish", async (req: Request, res: Response) => {
 
 // ── POST /:id/unpublish — Take offline ──
 
-router.post("/:id/unpublish", async (req: Request, res: Response) => {
+router.post("/:id/unpublish", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) {
       return res.status(403).json({ error: "Access denied" });
@@ -1144,7 +1144,7 @@ async function verifyOwnership(propertyId: string, userId: string) {
 }
 
 // POST /:id/photos — Add photo
-router.post("/:id/photos", async (req: Request, res: Response) => {
+router.post("/:id/photos", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1182,7 +1182,7 @@ router.post("/:id/photos", async (req: Request, res: Response) => {
 });
 
 // PATCH /:id/photos/reorder — Bulk reorder (must be before /:photoId)
-router.patch("/:id/photos/reorder", async (req: Request, res: Response) => {
+router.patch("/:id/photos/reorder", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1205,7 +1205,7 @@ router.patch("/:id/photos/reorder", async (req: Request, res: Response) => {
 });
 
 // PATCH /:id/photos/:photoId — Update photo (cover, order)
-router.patch("/:id/photos/:photoId", async (req: Request, res: Response) => {
+router.patch("/:id/photos/:photoId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, photoId } = req.params;
@@ -1236,7 +1236,7 @@ router.patch("/:id/photos/:photoId", async (req: Request, res: Response) => {
 });
 
 // DELETE /:id/photos/:photoId — Delete photo
-router.delete("/:id/photos/:photoId", async (req: Request, res: Response) => {
+router.delete("/:id/photos/:photoId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, photoId } = req.params;
@@ -1279,7 +1279,7 @@ router.delete("/:id/photos/:photoId", async (req: Request, res: Response) => {
 // ── Amenities CRUD ──────────────────────────────────────
 
 // PUT /:id/amenities — Sync amenities (replace all)
-router.put("/:id/amenities", async (req: Request, res: Response) => {
+router.put("/:id/amenities", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1318,7 +1318,7 @@ router.put("/:id/amenities", async (req: Request, res: Response) => {
 // ── Policy CRUD ─────────────────────────────────────────
 
 // POST /:id/policies — Add a custom policy
-router.post("/:id/policies", async (req: Request, res: Response) => {
+router.post("/:id/policies", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1352,7 +1352,7 @@ router.post("/:id/policies", async (req: Request, res: Response) => {
 });
 
 // PATCH /:id/policies/:policyId — Update a policy
-router.patch("/:id/policies/:policyId", async (req: Request, res: Response) => {
+router.patch("/:id/policies/:policyId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, policyId } = req.params;
@@ -1376,7 +1376,7 @@ router.patch("/:id/policies/:policyId", async (req: Request, res: Response) => {
 });
 
 // DELETE /:id/policies/:policyId — Delete a policy
-router.delete("/:id/policies/:policyId", async (req: Request, res: Response) => {
+router.delete("/:id/policies/:policyId", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, policyId } = req.params;
@@ -1393,7 +1393,7 @@ router.delete("/:id/policies/:policyId", async (req: Request, res: Response) => 
 });
 
 // PATCH /:id/policies/reorder — Bulk reorder policies (must be before /:policyId in route order, but Express matches by registration order)
-router.patch("/:id/policies-reorder", async (req: Request, res: Response) => {
+router.patch("/:id/policies-reorder", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1418,7 +1418,7 @@ router.patch("/:id/policies-reorder", async (req: Request, res: Response) => {
 // ── Acquisition Details CRUD ─────────────────────────────
 
 // PATCH /:id/acquisition — Update acquisition details
-router.patch("/:id/acquisition", async (req: Request, res: Response) => {
+router.patch("/:id/acquisition", requirePmPermission("properties.edit"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1469,7 +1469,7 @@ router.patch("/:id/acquisition", async (req: Request, res: Response) => {
 // ── Document CRUD ────────────────────────────────────────
 
 // POST /:id/documents — Add a document
-router.post("/:id/documents", async (req: Request, res: Response) => {
+router.post("/:id/documents", requirePmPermission("documents.manage"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id } = req.params;
@@ -1500,7 +1500,7 @@ router.post("/:id/documents", async (req: Request, res: Response) => {
 });
 
 // DELETE /:id/documents/:docId — Delete a document
-router.delete("/:id/documents/:docId", async (req: Request, res: Response) => {
+router.delete("/:id/documents/:docId", requirePmPermission("documents.manage"), async (req: Request, res: Response) => {
   try {
     if (!isPM(req)) return res.status(403).json({ error: "Access denied" });
     const { id, docId } = req.params;
@@ -2200,7 +2200,7 @@ router.patch("/:id/pricing/:date", requirePmPermission("properties.edit"), async
 
 // ── POST /:id/expenses — Add an expense ──
 
-router.post("/:id/expenses", async (req: Request, res: Response) => {
+router.post("/:id/expenses", requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.session.userId!;
@@ -2259,7 +2259,7 @@ router.post("/:id/expenses", async (req: Request, res: Response) => {
 
 // ── PATCH /:id/expenses/:expenseId — Update an expense ──
 
-router.patch("/:id/expenses/:expenseId", async (req: Request, res: Response) => {
+router.patch("/:id/expenses/:expenseId", requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
   try {
     const { id, expenseId } = req.params;
     const userId = req.session.userId!;
@@ -2302,7 +2302,7 @@ router.patch("/:id/expenses/:expenseId", async (req: Request, res: Response) => 
 
 // ── DELETE /:id/expenses/:expenseId — Delete an expense ──
 
-router.delete("/:id/expenses/:expenseId", async (req: Request, res: Response) => {
+router.delete("/:id/expenses/:expenseId", requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
   try {
     const { id, expenseId } = req.params;
     const userId = req.session.userId!;
