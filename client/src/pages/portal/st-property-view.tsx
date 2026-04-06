@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import SharedBookings from "@/pages/portal/my-bookings";
 import { Card, CardContent } from "@/components/ui/card";
@@ -266,6 +267,10 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
   })();
 
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("properties.edit");
+  const canManageBookings = hasPermission("bookings.manage");
+  const canManageFinancials = hasPermission("financials.manage");
 
   const handleTabChange = (tab: TabKey) => {
     setActiveTab(tab);
@@ -317,13 +322,15 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
           </h1>
           <Badge className={badge.className}>{badge.label}</Badge>
         </div>
-        <Button
-          size="sm"
-          onClick={() => navigate(`/portal/st-properties/${id}/edit`)}
-        >
-          <Pencil className="h-4 w-4 mr-1.5" />
-          Edit Property
-        </Button>
+        {canEdit && (
+          <Button
+            size="sm"
+            onClick={() => navigate(`/portal/st-properties/${id}/edit`)}
+          >
+            <Pencil className="h-4 w-4 mr-1.5" />
+            Edit Property
+          </Button>
+        )}
       </div>
 
       {/* Main content area */}
@@ -1156,6 +1163,8 @@ const LOCK_LOCATIONS = ["Front Door", "Back Door", "Gate", "Garage", "Safe Box",
 
 function ViewLocks({ property }: { property: StPropertyData }) {
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("properties.edit");
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState({ name: "", brand: "", model: "", deviceId: "", location: "", apiKey: "" });
@@ -1199,7 +1208,7 @@ function ViewLocks({ property }: { property: StPropertyData }) {
           <Key className="h-5 w-5 text-primary" />
           <h3 className="text-lg font-semibold">Smart Locks</h3>
         </div>
-        <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4 mr-1" /> Add Lock</Button>
+        {canEdit && <Button size="sm" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4 mr-1" /> Add Lock</Button>}
       </div>
       <Separator className="mb-6" />
 
@@ -1230,14 +1239,16 @@ function ViewLocks({ property }: { property: StPropertyData }) {
                     </div>
                     <p className="text-xs text-muted-foreground mt-2">{lock.activePins} active PIN(s)</p>
                   </div>
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleMut.mutate({ lockId: lock.id, isActive: !lock.isActive })}>
-                      {lock.isActive ? <span className="text-xs">⏸</span> : <span className="text-xs">▶</span>}
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(lock.id)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
+                  {canEdit && (
+                    <div className="flex gap-1">
+                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleMut.mutate({ lockId: lock.id, isActive: !lock.isActive })}>
+                        {lock.isActive ? <span className="text-xs">⏸</span> : <span className="text-xs">▶</span>}
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(lock.id)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -1361,6 +1372,8 @@ const INV_CATEGORY_COLORS: Record<string, string> = {
 
 function ViewInventory({ property }: { property: StPropertyData }) {
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canEdit = hasPermission("properties.edit");
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [editItem, setEditItem] = useState<any>(null);
@@ -1424,9 +1437,11 @@ function ViewInventory({ property }: { property: StPropertyData }) {
           <Package className="h-5 w-5 text-primary" />
           <h3 className="text-lg font-semibold">Inventory</h3>
         </div>
-        <Button size="sm" onClick={() => { setEditItem(null); setForm({ name: "", category: "Furniture", quantity: "1", unitCost: "", condition: "New", purchaseDate: "", location: "", notes: "" }); setAddOpen(true); }}>
-          <Plus className="h-4 w-4 mr-1" /> Add Item
-        </Button>
+        {canEdit && (
+          <Button size="sm" onClick={() => { setEditItem(null); setForm({ name: "", category: "Furniture", quantity: "1", unitCost: "", condition: "New", purchaseDate: "", location: "", notes: "" }); setAddOpen(true); }}>
+            <Plus className="h-4 w-4 mr-1" /> Add Item
+          </Button>
+        )}
       </div>
       <Separator className="mb-6" />
 
@@ -1503,10 +1518,12 @@ function ViewInventory({ property }: { property: StPropertyData }) {
                     <td className={`px-4 py-2.5 ${condColor}`}>{item.condition}</td>
                     <td className="px-4 py-2.5 text-muted-foreground">{item.location || "—"}</td>
                     <td className="px-4 py-2.5">
-                      <div className="flex gap-1">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Pencil className="h-3.5 w-3.5" /></Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(item.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
-                      </div>
+                      {canEdit && (
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Pencil className="h-3.5 w-3.5" /></Button>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteMut.mutate(item.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1988,6 +2005,8 @@ function BookingCalendarView({
 function ViewBookings({ property }: { property: StPropertyData }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canManageBookings = hasPermission("bookings.manage");
 
   // ── State ──
   const [view, setView] = useState<"list" | "calendar">("list");
@@ -2220,12 +2239,16 @@ function ViewBookings({ property }: { property: StPropertyData }) {
             ))}
           </SelectContent>
         </Select>
-        <Button size="sm" onClick={() => setManualBookingOpen(true)}>
-          <Plus className="h-4 w-4 mr-1" /> Add Booking
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => setBlockDatesOpen(true)}>
-          <Ban className="h-4 w-4 mr-1" /> Block Dates
-        </Button>
+        {canManageBookings && (
+          <>
+            <Button size="sm" onClick={() => setManualBookingOpen(true)}>
+              <Plus className="h-4 w-4 mr-1" /> Add Booking
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setBlockDatesOpen(true)}>
+              <Ban className="h-4 w-4 mr-1" /> Block Dates
+            </Button>
+          </>
+        )}
       </div>
 
       {/* List View */}
@@ -2713,6 +2736,8 @@ function ViewBookings({ property }: { property: StPropertyData }) {
 // ─── Tab: Transactions ───────────────────────────────────────────────────────
 
 function ViewTransactions({ property }: { property: StPropertyData }) {
+  const { hasPermission } = useAuth();
+  const canManageFinancials = hasPermission("financials.manage");
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editExpense, setEditExpense] = useState<any>(null);
@@ -2737,9 +2762,11 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
           <Receipt className="h-5 w-5 text-primary" />
           <h3 className="text-lg font-semibold">Transactions</h3>
         </div>
-        <Button size="sm" onClick={() => { setEditExpense(null); setDialogOpen(true); }}>
-          <Plus className="h-4 w-4 mr-1" /> Add Expense
-        </Button>
+        {canManageFinancials && (
+          <Button size="sm" onClick={() => { setEditExpense(null); setDialogOpen(true); }}>
+            <Plus className="h-4 w-4 mr-1" /> Add Expense
+          </Button>
+        )}
       </div>
       <Separator className="mb-6" />
 
@@ -2794,28 +2821,30 @@ function ViewTransactions({ property }: { property: StPropertyData }) {
                     </td>
                     <td className="px-4 py-2.5 text-right font-medium">{formatCurrency(exp.amount)}</td>
                     <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 w-7 p-0"
-                          onClick={() => { setEditExpense(exp); setDialogOpen(true); }}
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 w-7 p-0 text-red-500 hover:text-red-700"
-                          onClick={() => {
-                            if (confirm("Delete this expense?")) {
-                              deleteMutation.mutate(exp.id);
-                            }
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
+                      {canManageFinancials && (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => { setEditExpense(exp); setDialogOpen(true); }}
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0 text-red-500 hover:text-red-700"
+                            onClick={() => {
+                              if (confirm("Delete this expense?")) {
+                                deleteMutation.mutate(exp.id);
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

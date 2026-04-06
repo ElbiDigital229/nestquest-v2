@@ -6,6 +6,7 @@ interface AuthUser {
   role: string;
   name: string;
   phone?: string;
+  permissions?: string[];
 }
 
 interface AuthContextType {
@@ -14,6 +15,9 @@ interface AuthContextType {
   login: (user: AuthUser) => void;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  /** Returns true if the current user has the given permission key.
+   *  PROPERTY_MANAGER always returns true. Other roles always return false. */
+  hasPermission: (key: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -33,6 +37,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           role: data.user.role,
           name: data.profile?.fullName || data.user.email,
           phone: data.user.phone,
+          permissions: data.profile?.permissions ?? [],
         };
         setUser(authUser);
         localStorage.setItem("nestquest_auth_user", JSON.stringify(authUser));
@@ -70,8 +75,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem("nestquest_auth_user");
   }, []);
 
+  const hasPermission = useCallback((key: string): boolean => {
+    if (!user) return false;
+    if (user.role === "PROPERTY_MANAGER" || user.role === "SUPER_ADMIN") return true;
+    if (user.role === "PM_TEAM_MEMBER") return (user.permissions ?? []).includes(key);
+    return false;
+  }, [user]);
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, isLoading, login, logout, refreshUser, hasPermission }}>
       {children}
     </AuthContext.Provider>
   );
