@@ -57,13 +57,17 @@ git reset --hard origin/main
 NEW_COMMIT=$(git rev-parse --short HEAD)
 log "Deploying commit ${NEW_COMMIT}"
 
-# Install dependencies (production only -- dotenv must be in dependencies, not devDependencies)
+# Install ALL dependencies (devDependencies needed for vite build + esbuild platform binaries)
 log "Installing dependencies..."
-npm ci --omit=dev
+npm ci
 
 # Build frontend assets
 log "Building frontend..."
 npm run build
+
+# Prune devDependencies after build (tsx + esbuild are in dependencies, so they survive)
+log "Pruning devDependencies..."
+npm prune --omit=dev
 
 # Run any pending DB migrations
 log "Running DB migrations..."

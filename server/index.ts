@@ -170,7 +170,7 @@ async function startServer(): Promise<void> {
       saveUninitialized: false,
       name: "nq.sid", // Don't use default 'connect.sid' — fingerprinting risk
       cookie: {
-        secure: isProduction,      // HTTPS-only in production
+        secure: isProduction && process.env.FORCE_INSECURE_COOKIES !== "true",
         httpOnly: true,            // JS cannot read cookie
         maxAge: 24 * 60 * 60 * 1000,
         sameSite: isProduction ? "strict" : "lax",
