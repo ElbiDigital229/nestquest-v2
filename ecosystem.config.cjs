@@ -21,7 +21,7 @@ module.exports = {
   apps: [
     {
       name: "nestquest",
-      script: "tsx",
+      script: "./node_modules/.bin/tsx",
       args: "server/index.ts",
       cwd: "/home/ubuntu/nestquest-v2",
 

@@ -86,6 +86,9 @@ if [[ "${USER_COUNT}" == "0" ]]; then
   psql "${DATABASE_URL}" -f "${APP_DIR}/scripts/seed.sql" && log "Seed complete" || log "WARNING: Seed failed -- continuing"
 fi
 
+# ── Ensure log directory exists ───────────────────────────────────────────────
+sudo mkdir -p /var/log/nestquest && sudo chown ubuntu:ubuntu /var/log/nestquest
+
 # ── Start / reload ────────────────────────────────────────────────────────────
 
 # If PM2 is not yet managing this app, start it; otherwise do a hot reload.
