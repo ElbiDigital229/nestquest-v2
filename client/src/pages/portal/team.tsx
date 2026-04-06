@@ -196,6 +196,16 @@ export default function TeamPage() {
     onError: (err: any) => toast({ title: err.message, variant: "destructive" }),
   });
 
+  const seedDefaultsMutation = useMutation({
+    mutationFn: () => api.post("/team/roles/seed-defaults", {}),
+    onSuccess: (data: any) => {
+      const count = data?.roles?.length ?? 0;
+      toast({ title: count > 0 ? `${count} default role(s) loaded` : "Default roles already exist" });
+      queryClient.invalidateQueries({ queryKey: ["/team/roles"] });
+    },
+    onError: (err: any) => toast({ title: err.message, variant: "destructive" }),
+  });
+
   const openRoleDialog = (mode: "create" | "edit", role?: Role) => {
     setRoleName(role?.name || "");
     setRoleDesc(role?.description || "");
@@ -229,9 +239,15 @@ export default function TeamPage() {
         </div>
         <div className="flex gap-2">
           {tab === "roles" && (
-            <Button onClick={() => openRoleDialog("create")}>
-              <Plus className="h-4 w-4 mr-1" /> New Role
-            </Button>
+            <>
+              <Button variant="outline" onClick={() => seedDefaultsMutation.mutate()} disabled={seedDefaultsMutation.isPending}>
+                {seedDefaultsMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+                Load Defaults
+              </Button>
+              <Button onClick={() => openRoleDialog("create")}>
+                <Plus className="h-4 w-4 mr-1" /> New Role
+              </Button>
+            </>
           )}
           {tab === "members" && (
             <Button onClick={() => setInviteOpen(true)}>

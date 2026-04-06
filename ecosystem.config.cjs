@@ -1,11 +1,16 @@
 /**
- * PM2 Ecosystem Config — NestQuest
+ * PM2 Ecosystem Config -- NestQuest
  *
  * Usage:
- *   pm2 start ecosystem.config.cjs          ← start
- *   pm2 reload nestquest --update-env       ← zero-downtime reload
- *   pm2 logs nestquest                      ← view logs
- *   pm2 monit                               ← live monitoring dashboard
+ *   pm2 start ecosystem.config.cjs --env production   <- start
+ *   pm2 reload nestquest --update-env                 <- zero-downtime reload
+ *   pm2 logs nestquest                                <- view logs
+ *   pm2 monit                                         <- live monitoring dashboard
+ *
+ * Env vars (DATABASE_URL, SESSION_SECRET, etc.) are loaded automatically from
+ * the .env file in the app directory via `import 'dotenv/config'` at the top of
+ * server/index.ts -- no need to source .env before pm2 start, and vars survive
+ * pm2 auto-restarts and server reboots correctly.
  *
  * Logs are written to /var/log/nestquest/ (change LOG_DIR if needed).
  */
@@ -18,41 +23,33 @@ module.exports = {
       name: "nestquest",
       script: "tsx",
       args: "server/index.ts",
+      cwd: "/home/ubuntu/nestquest-v2",
 
-      // ── Scaling ──────────────────────────────────────
-      // "cluster" mode forks one worker per CPU core.
-      // All workers share the same port via the OS. Sessions must be in Redis
-      // (not in-process) for cluster mode to work correctly.
+      // Scaling -- cluster mode requires Redis for shared sessions
       exec_mode: process.env.REDIS_URL ? "cluster" : "fork",
       instances: process.env.REDIS_URL ? "max" : 1,
 
-      // ── Process lifecycle ─────────────────────────────
-      // Wait for the app to be listening before treating it as ready.
+      // Process lifecycle
       wait_ready: true,
-      listen_timeout: 10000,    // ms to wait for ready signal
-      kill_timeout: 5000,       // ms to wait before force-killing on reload
+      listen_timeout: 10000,
+      kill_timeout: 5000,
 
-      // ── Auto-restart ──────────────────────────────────
+      // Auto-restart
       autorestart: true,
       max_restarts: 10,
-      min_uptime: "5s",         // must stay alive 5s to count as a successful start
-      restart_delay: 2000,      // wait 2s between restarts (avoid restart loops)
+      min_uptime: "5s",
+      restart_delay: 2000,
 
-      // ── Memory guard ─────────────────────────────────
-      // Restart if the process leaks memory past 512MB.
+      // Memory guard
       max_memory_restart: "512M",
 
-      // ── Logging ──────────────────────────────────────
+      // Logging
       out_file: `${LOG_DIR}/out.log`,
       error_file: `${LOG_DIR}/error.log`,
       merge_logs: true,
       log_date_format: "YYYY-MM-DD HH:mm:ss Z",
-      // Keep 30 days of logs (requires pm2-logrotate module)
-      // pm2 install pm2-logrotate
 
-      // ── Environment ──────────────────────────────────
-      // Production env vars are loaded from /home/ubuntu/nestquest/.env
-      // (sourced before pm2 start in deploy.sh) — do NOT hardcode secrets here.
+      // Environment -- only NODE_ENV and PORT here; secrets come from .env via dotenv
       env: {
         NODE_ENV: "development",
         PORT: 3000,

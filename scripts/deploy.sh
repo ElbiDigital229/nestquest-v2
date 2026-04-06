@@ -1,38 +1,32 @@
 #!/bin/bash
-# ──────────────────────────────────────────────────────────────────────────────
-# NestQuest — Zero-Downtime Deploy Script (EC2 / Ubuntu)
+# ─────────────────────────────────────────────────────────────────────────────
+# NestQuest -- Zero-Downtime Deploy Script (EC2 / Ubuntu)
 #
 # Usage:
-#   ./scripts/deploy.sh           ← pull latest + restart
-#   ./scripts/deploy.sh rollback  ← revert to previous release
-#
-# Deployment strategy:
-#   - PM2 is used as the process manager (keeps the app alive across restarts)
-#   - We pull latest code, install deps, build frontend, then do a hot reload
-#   - PM2 reload (not restart) achieves near-zero downtime: new workers start
-#     before old ones are killed
-#   - If the health check fails post-reload, we immediately rollback
+#   ./scripts/deploy.sh           <- pull latest + restart
+#   ./scripts/deploy.sh rollback  <- revert to previous release
 #
 # Requirements (one-time setup):
-#   sudo npm install -g pm2
-#   pm2 startup    ← follow the printed command
+#   sudo npm install -g pm2 tsx
+#   sudo mkdir -p /var/log/nestquest && sudo chown ubuntu:ubuntu /var/log/nestquest
+#   pm2 startup    <- follow the printed command
 #   pm2 save
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-APP_DIR="/home/ubuntu/nestquest"
-LOG_FILE="/var/log/nestquest-deploy.log"
+APP_DIR="/home/ubuntu/nestquest-v2"
+LOG_FILE="/var/log/nestquest/deploy.log"
 HEALTH_URL="${HEALTH_URL:-http://localhost:3000/api/health}"
 ROLLBACK_MARKER="${APP_DIR}/.last_deploy_commit"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"; }
 
-# ── Rollback ───────────────────────────────────────────
+# ── Rollback ──────────────────────────────────────────────────────────────────
 
 if [[ "${1:-}" == "rollback" ]]; then
   if [[ ! -f "${ROLLBACK_MARKER}" ]]; then
-    log "ERROR: No rollback marker found — cannot rollback"
+    log "ERROR: No rollback marker found -- cannot rollback"
     exit 1
   fi
   PREV_COMMIT=$(cat "${ROLLBACK_MARKER}")
@@ -41,12 +35,12 @@ if [[ "${1:-}" == "rollback" ]]; then
   git checkout "${PREV_COMMIT}"
   npm ci --omit=dev
   npm run build
-  pm2 reload nestquest --update-env
+  pm2 reload ecosystem.config.cjs --env production --update-env
   log "Rollback complete"
   exit 0
 fi
 
-# ── Deploy ─────────────────────────────────────────────
+# ── Deploy ────────────────────────────────────────────────────────────────────
 
 cd "${APP_DIR}"
 
@@ -63,7 +57,7 @@ git reset --hard origin/main
 NEW_COMMIT=$(git rev-parse --short HEAD)
 log "Deploying commit ${NEW_COMMIT}"
 
-# Install dependencies (production only)
+# Install dependencies (production only -- dotenv must be in dependencies, not devDependencies)
 log "Installing dependencies..."
 npm ci --omit=dev
 
@@ -71,18 +65,39 @@ npm ci --omit=dev
 log "Building frontend..."
 npm run build
 
-# Run any pending DB migrations (Drizzle)
+# Run any pending DB migrations
 log "Running DB migrations..."
 npx drizzle-kit push || {
-  log "ERROR: Migration failed — aborting deploy"
+  log "ERROR: Migration failed -- aborting deploy"
   exit 1
 }
 
-# Reload (not restart) — zero-downtime hot swap
-log "Reloading application..."
-pm2 reload nestquest --update-env
+# ── First-deploy seed check ───────────────────────────────────────────────────
+# If the users table is empty this is a fresh DB -- load seed data.
+# DATABASE_URL must be set in .env (loaded by the app via dotenv/config).
+# We load it here manually just for this psql call.
+if [[ -f "${APP_DIR}/.env" ]]; then
+  set -a; source "${APP_DIR}/.env"; set +a
+fi
 
-# ── Health check ───────────────────────────────────────
+USER_COUNT=$(psql "${DATABASE_URL}" -tAc "SELECT COUNT(*) FROM users;" 2>/dev/null || echo "0")
+if [[ "${USER_COUNT}" == "0" ]]; then
+  log "Empty users table detected -- seeding initial data..."
+  psql "${DATABASE_URL}" -f "${APP_DIR}/scripts/seed.sql" && log "Seed complete" || log "WARNING: Seed failed -- continuing"
+fi
+
+# ── Start / reload ────────────────────────────────────────────────────────────
+
+# If PM2 is not yet managing this app, start it; otherwise do a hot reload.
+if pm2 describe nestquest &>/dev/null; then
+  log "Reloading application (zero-downtime)..."
+  pm2 reload ecosystem.config.cjs --env production --update-env
+else
+  log "Starting application for the first time..."
+  pm2 start ecosystem.config.cjs --env production
+fi
+
+# ── Health check ──────────────────────────────────────────────────────────────
 
 log "Waiting for health check..."
 sleep 8
@@ -91,30 +106,30 @@ MAX_ATTEMPTS=6
 for i in $(seq 1 $MAX_ATTEMPTS); do
   HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
   if [[ "${HTTP_STATUS}" == "200" ]]; then
-    log "Health check passed (attempt ${i}) — deploy successful"
+    log "Health check passed (attempt ${i}) -- deploy successful"
     pm2 save
     log "Deploy complete: ${NEW_COMMIT}"
     exit 0
   fi
-  log "Attempt ${i}/${MAX_ATTEMPTS}: status ${HTTP_STATUS} — retrying in 10s"
+  log "Attempt ${i}/${MAX_ATTEMPTS}: status ${HTTP_STATUS} -- retrying in 10s"
   sleep 10
 done
 
-# ── Auto-rollback on health check failure ──────────────
+# ── Auto-rollback on health check failure ─────────────────────────────────────
 
-log "ERROR: Health check failed — initiating automatic rollback"
+log "ERROR: Health check failed -- initiating automatic rollback"
 PREV_COMMIT=$(cat "${ROLLBACK_MARKER}")
 git checkout "${PREV_COMMIT}"
 npm ci --omit=dev
 npm run build
-pm2 reload nestquest --update-env
+pm2 reload ecosystem.config.cjs --env production --update-env
 sleep 8
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
 
 if [[ "${HTTP_STATUS}" == "200" ]]; then
-  log "Rollback successful — application restored to ${PREV_COMMIT}"
+  log "Rollback successful -- application restored to ${PREV_COMMIT}"
 else
-  log "CRITICAL: Rollback failed — manual intervention required"
+  log "CRITICAL: Rollback failed -- manual intervention required"
 fi
 
 exit 1

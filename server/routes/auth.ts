@@ -243,6 +243,27 @@ router.post("/signup", signupLimiter, async (req: Request, res: Response) => {
       userAgent: req.headers["user-agent"] || null,
     });
 
+    // Seed default team roles for new Property Managers
+    if (data.role === "PROPERTY_MANAGER") {
+      try {
+        const ALL_PERMISSIONS = ["properties.view","properties.create","properties.edit","properties.delete","bookings.view","bookings.manage","owners.view","owners.manage","tenants.view","tenants.manage","financials.view","financials.manage","documents.view","documents.manage","team.manage","billing.view","billing.manage","cleaners.manage"];
+        const defaultRoles = [
+          { name: "CEO", description: "Full access to all features", permissions: ALL_PERMISSIONS },
+          { name: "Senior Manager", description: "Full operational access, no team or billing administration", permissions: ALL_PERMISSIONS.filter(p => !["team.manage","billing.manage"].includes(p)) },
+          { name: "Front Desk", description: "Property viewing and booking management", permissions: ["properties.view","bookings.view","bookings.manage","documents.view"] },
+          { name: "Accountant", description: "Financial data and reporting only", permissions: ["properties.view","financials.view","financials.manage","documents.view"] },
+        ];
+        for (const role of defaultRoles) {
+          await db.execute(sql`
+            INSERT INTO pm_roles (pm_user_id, name, description, permissions, is_default)
+            VALUES (${user.id}, ${role.name}, ${role.description}, ${JSON.stringify(role.permissions)}, true)
+          `);
+        }
+      } catch (err) {
+        console.error("Failed to seed default roles:", err);
+      }
+    }
+
     // Notify super admins of new signup
     try {
       const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "SUPER_ADMIN"));

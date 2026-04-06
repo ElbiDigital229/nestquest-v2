@@ -100,6 +100,43 @@ router.delete("/roles/:id", requirePmPermission("team.manage"), async (req: Requ
   }
 });
 
+// Seed default roles for existing PMs
+router.post("/roles/seed-defaults", requirePmPermission("team.manage"), async (req: Request, res: Response) => {
+  try {
+    const pmId = await getPmUserId(req);
+
+    const ALL_PERMISSIONS = ["properties.view","properties.create","properties.edit","properties.delete","bookings.view","bookings.manage","owners.view","owners.manage","tenants.view","tenants.manage","financials.view","financials.manage","documents.view","documents.manage","team.manage","billing.view","billing.manage","cleaners.manage"];
+    const defaultRoles = [
+      { name: "CEO", description: "Full access to all features", permissions: ALL_PERMISSIONS },
+      { name: "Senior Manager", description: "Full operational access, no team or billing administration", permissions: ALL_PERMISSIONS.filter(p => !["team.manage","billing.manage"].includes(p)) },
+      { name: "Front Desk", description: "Property viewing and booking management", permissions: ["properties.view","bookings.view","bookings.manage","documents.view"] },
+      { name: "Accountant", description: "Financial data and reporting only", permissions: ["properties.view","financials.view","financials.manage","documents.view"] },
+    ];
+
+    const created = [];
+    for (const role of defaultRoles) {
+      // Skip if a role with this name already exists for this PM
+      const [existing] = await db.select({ id: pmRoles.id }).from(pmRoles)
+        .where(and(eq(pmRoles.pmUserId, pmId), eq(pmRoles.name, role.name)))
+        .limit(1);
+      if (existing) continue;
+
+      const [inserted] = await db.insert(pmRoles).values({
+        pmUserId: pmId,
+        name: role.name,
+        description: role.description,
+        permissions: JSON.stringify(role.permissions),
+        isDefault: true,
+      }).returning();
+      created.push(inserted);
+    }
+
+    return res.json({ message: `Created ${created.length} default role(s)`, roles: created });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // ── TEAM MEMBERS ────────────────────────────────────────
 
 // List team members
