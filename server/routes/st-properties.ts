@@ -205,7 +205,7 @@ router.get("/po/my-properties", async (req: Request, res: Response) => {
 
 // ── GET /reports/earnings — PM earnings across all properties ──
 
-router.get("/reports/earnings", async (req: Request, res: Response) => {
+router.get("/reports/earnings", requirePmPermission("financials.view"), async (req: Request, res: Response) => {
   try {
     const userRole = req.session.userRole!;
     if (userRole !== "SUPER_ADMIN" && !isPM(req)) return res.status(403).json({ error: "Access denied" });
@@ -581,7 +581,7 @@ router.get("/documents", requirePmPermission("documents.view"), async (req: Requ
 
 // ── GET /analytics — occupancy, ADR, RevPAR, and more ──
 
-router.get("/analytics", requirePmPermission("properties.view"), async (req: Request, res: Response) => {
+router.get("/analytics", requirePmPermission("financials.view"), async (req: Request, res: Response) => {
   try {
     const pmUserId = await resolvePmId(req);
     const { from, to, propertyId } = req.query as Record<string, string>;

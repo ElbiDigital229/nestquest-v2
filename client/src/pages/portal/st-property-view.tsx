@@ -148,25 +148,25 @@ interface StPropertyData {
 
 // ─── Tab config ─────────────────────────────────────────────────────────────
 
-const TABS = [
-  { key: "details", name: "Property Details", icon: Home },
-  { key: "description", name: "Description", icon: FileText },
-  { key: "photos", name: "Photos", icon: Camera },
-  { key: "amenities", name: "Amenities", icon: Sparkles },
-  { key: "pricing", name: "Pricing", icon: DollarSign },
-  { key: "policies", name: "Policies", icon: ShieldCheck },
-  { key: "owner", name: "Property Owner", icon: Users },
-  { key: "agreement", name: "Agreement", icon: ClipboardCheck },
-  { key: "inventory", name: "Inventory", icon: Package },
-  { key: "investment", name: "Investment", icon: TrendingUp },
-  { key: "calendar", name: "Calendar & Pricing", icon: CalendarDays },
-  { key: "bookings", name: "Bookings", icon: CalendarDays },
-  { key: "transactions", name: "Transactions", icon: Receipt },
-  { key: "reviews", name: "Reviews", icon: Star },
-  { key: "activity", name: "Activity Log", icon: Activity },
+const ALL_TABS = [
+  { key: "details",      name: "Property Details",  icon: Home,          permission: "properties.view" },
+  { key: "description", name: "Description",        icon: FileText,      permission: "properties.view" },
+  { key: "photos",      name: "Photos",             icon: Camera,        permission: "properties.view" },
+  { key: "amenities",   name: "Amenities",          icon: Sparkles,      permission: "properties.view" },
+  { key: "pricing",     name: "Pricing",            icon: DollarSign,    permission: "properties.view" },
+  { key: "policies",    name: "Policies",           icon: ShieldCheck,   permission: "properties.view" },
+  { key: "owner",       name: "Property Owner",     icon: Users,         permission: "properties.view" },
+  { key: "agreement",   name: "Agreement",          icon: ClipboardCheck, permission: "properties.view" },
+  { key: "inventory",   name: "Inventory",          icon: Package,       permission: "properties.view" },
+  { key: "investment",  name: "Investment",         icon: TrendingUp,    permission: "financials.view" },
+  { key: "calendar",    name: "Calendar & Pricing", icon: CalendarDays,  permission: "bookings.view" },
+  { key: "bookings",    name: "Bookings",           icon: CalendarDays,  permission: "bookings.view" },
+  { key: "transactions",name: "Transactions",       icon: Receipt,       permission: "financials.view" },
+  { key: "reviews",     name: "Reviews",            icon: Star,          permission: "bookings.view" },
+  { key: "activity",    name: "Activity Log",       icon: Activity,      permission: "properties.view" },
 ] as const;
 
-type TabKey = (typeof TABS)[number]["key"];
+type TabKey = (typeof ALL_TABS)[number]["key"];
 
 const statusBadge: Record<string, { label: string; className: string }> = {
   draft: { label: "Draft", className: "border-yellow-500 text-yellow-700 bg-yellow-50" },
@@ -261,7 +261,7 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
     try {
       const search = window.location.search;
       const tab = new URLSearchParams(search).get("tab");
-      const valid = TABS.map(t => t.key);
+      const valid = ALL_TABS.map(t => t.key);
       return (tab && valid.includes(tab as TabKey) ? tab : "details") as TabKey;
     } catch { return "details" as TabKey; }
   })();
@@ -271,6 +271,9 @@ export default function StPropertyView({ id: propId }: { id?: string } = {}) {
   const canEdit = hasPermission("properties.edit");
   const canManageBookings = hasPermission("bookings.manage");
   const canManageFinancials = hasPermission("financials.manage");
+
+  // Filter tabs to only those the user has permission to see
+  const TABS = ALL_TABS.filter(tab => hasPermission(tab.permission));
 
   const handleTabChange = (tab: TabKey) => {
     setActiveTab(tab);

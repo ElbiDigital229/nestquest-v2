@@ -35,7 +35,7 @@ import {
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
-type NavItem = { label: string; href: string; icon: any };
+type NavItem = { label: string; href: string; icon: any; permission?: string };
 
 // Base nav items — role-aware labels
 function getBaseNavItems(role: string): NavItem[] {
@@ -72,8 +72,9 @@ const roleNavItems: Record<string, NavItem[]> = {
     { label: "Property Managers", href: "/portal/property-managers", icon: Users },
   ],
   PM_TEAM_MEMBER: [
-    { label: "Documents", href: "/portal/documents", icon: FileText },
-    { label: "Settlements", href: "/portal/settlements", icon: Handshake },
+    { label: "Documents", href: "/portal/documents", icon: FileText, permission: "documents.view" },
+    { label: "Settlements", href: "/portal/settlements", icon: Handshake, permission: "financials.view" },
+    { label: "My Reports", href: "/portal/reports", icon: BarChart3, permission: "financials.view" },
   ],
   CLEANER: [],
   TENANT: [
@@ -81,17 +82,18 @@ const roleNavItems: Record<string, NavItem[]> = {
   ],
 };
 
-// ST sub-nav items for the collapsible section
+// ST sub-nav items — permission field controls visibility for team members
+// PM (PROPERTY_MANAGER) always sees all items; permission is only checked for PM_TEAM_MEMBER
 const stNavItems: NavItem[] = [
-  { label: "ST Properties", href: "/portal/st-properties", icon: Home },
-  { label: "Calendar", href: "/portal/calendar", icon: CalendarDays },
-  { label: "Pricing", href: "/portal/st-pricing", icon: DollarSign },
-  { label: "Analytics", href: "/portal/st-analytics", icon: TrendingUp },
-  { label: "Guests", href: "/portal/st-guests", icon: Contact },
-  { label: "Reviews", href: "/portal/st-reviews", icon: Star },
-  { label: "Cancellations", href: "/portal/st-cancellations", icon: XCircle },
-  { label: "Msg Templates", href: "/portal/st-message-templates", icon: Mail },
-  { label: "Smart Locks", href: "/portal/st-smart-locks", icon: KeyRound },
+  { label: "ST Properties", href: "/portal/st-properties", icon: Home, permission: "properties.view" },
+  { label: "Calendar", href: "/portal/calendar", icon: CalendarDays, permission: "bookings.view" },
+  { label: "Pricing", href: "/portal/st-pricing", icon: DollarSign, permission: "properties.edit" },
+  { label: "Analytics", href: "/portal/st-analytics", icon: TrendingUp, permission: "financials.view" },
+  { label: "Guests", href: "/portal/st-guests", icon: Contact, permission: "bookings.view" },
+  { label: "Reviews", href: "/portal/st-reviews", icon: Star, permission: "bookings.view" },
+  { label: "Cancellations", href: "/portal/st-cancellations", icon: XCircle, permission: "bookings.view" },
+  { label: "Msg Templates", href: "/portal/st-message-templates", icon: Mail, permission: "team.manage" },
+  { label: "Smart Locks", href: "/portal/st-smart-locks", icon: KeyRound, permission: "properties.edit" },
 ];
 
 // Cleaner ops sub-nav
@@ -100,10 +102,19 @@ const cleanerOpsItems: NavItem[] = [
 ];
 
 export default function PortalLayout({ children, fullWidth }: { children: React.ReactNode; fullWidth?: boolean }) {
-  const { user, logout } = useAuth();
+  const { user, logout, hasPermission } = useAuth();
+  const isTeamMember = user?.role === "PM_TEAM_MEMBER";
   const [location] = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stSectionOpen, setStSectionOpen] = useState(true);
+
+  // For team members, filter nav items and ST sub-items by their permissions
+  const visibleRoleNavItems = (roleNavItems[user?.role ?? ""] ?? []).filter(
+    item => !isTeamMember || !item.permission || hasPermission(item.permission)
+  );
+  const visibleStNavItems = isTeamMember
+    ? stNavItems.filter(item => !item.permission || hasPermission(item.permission))
+    : stNavItems;
 
   const handleLogout = async () => {
     await logout();
@@ -167,7 +178,7 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
         {/* Navigation */}
         <ScrollArea className="flex-1 py-2">
           <nav className="px-2 space-y-1">
-            {[...getBaseNavItems(user?.role || ""), ...(roleNavItems[user?.role || ""] || [])].map((item) => {
+            {[...getBaseNavItems(user?.role || ""), ...visibleRoleNavItems].map((item) => {
               const isActive = location === item.href;
               return (
                 <Link key={item.href} href={item.href}>
@@ -187,8 +198,8 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
               );
             })}
 
-            {/* Short Term collapsible section — PM only */}
-            {(user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER") && (
+            {/* Short Term collapsible section — PM always; team members only if they can see at least one item */}
+            {(user?.role === "PROPERTY_MANAGER" || (user?.role === "PM_TEAM_MEMBER" && visibleStNavItems.length > 0)) && (
               <>
                 <div className="pt-2">
                   <button
@@ -205,7 +216,7 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
                   </button>
                 </div>
                 {stSectionOpen &&
-                  stNavItems.map((item) => {
+                  visibleStNavItems.map((item) => {
                     const isActive = location === item.href || location.startsWith(item.href + "/");
                     return (
                       <Link key={item.href} href={item.href}>
@@ -227,8 +238,8 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
               </>
             )}
 
-            {/* Cleaner Ops — PM and team members with cleaners.manage */}
-            {(user?.role === "PROPERTY_MANAGER" || user?.role === "PM_TEAM_MEMBER") && (
+            {/* Cleaner Ops — PM always; team members only with cleaners.manage */}
+            {(user?.role === "PROPERTY_MANAGER" || (user?.role === "PM_TEAM_MEMBER" && hasPermission("cleaners.manage"))) && (
               <Link href="/portal/cleaner-ops">
                 <div
                   className={cn(
