@@ -213,13 +213,12 @@ router.post("/checkout", async (req: Request, res: Response) => {
 
       // Save card details to payment_methods if provided
       if (cardLast4 && cardBrand) {
-        await tx.execute(sql`
-          INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default)
-          VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)
-          ON CONFLICT (user_id) WHERE is_default = true
-          DO UPDATE SET card_brand = EXCLUDED.card_brand, card_last4 = EXCLUDED.card_last4,
-                        card_holder_name = EXCLUDED.card_holder_name
-        `);
+        const existingCard = await tx.execute(sql`SELECT id FROM payment_methods WHERE user_id = ${userId!} AND is_default = true LIMIT 1`);
+        if (existingCard.rows.length > 0) {
+          await tx.execute(sql`UPDATE payment_methods SET card_brand = ${sanitize(cardBrand)}, card_last4 = ${sanitize(cardLast4)}, card_holder_name = ${sanitize(cardName || 'Card Holder')} WHERE user_id = ${userId!} AND is_default = true`);
+        } else {
+          await tx.execute(sql`INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default) VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)`);
+        }
       }
 
       // Audit log
@@ -316,13 +315,12 @@ router.post("/activate", async (req: Request, res: Response) => {
 
       // Save card details if provided
       if (cardLast4 && cardBrand) {
-        await tx.execute(sql`
-          INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default)
-          VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)
-          ON CONFLICT (user_id) WHERE is_default = true
-          DO UPDATE SET card_brand = EXCLUDED.card_brand, card_last4 = EXCLUDED.card_last4,
-                        card_holder_name = EXCLUDED.card_holder_name
-        `);
+        const existingCard = await tx.execute(sql`SELECT id FROM payment_methods WHERE user_id = ${userId!} AND is_default = true LIMIT 1`);
+        if (existingCard.rows.length > 0) {
+          await tx.execute(sql`UPDATE payment_methods SET card_brand = ${sanitize(cardBrand)}, card_last4 = ${sanitize(cardLast4)}, card_holder_name = ${sanitize(cardName || 'Card Holder')} WHERE user_id = ${userId!} AND is_default = true`);
+        } else {
+          await tx.execute(sql`INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default) VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)`);
+        }
       }
 
       // Audit log
@@ -574,13 +572,12 @@ router.post("/pay-invoice", async (req: Request, res: Response) => {
 
       // Save card details if provided
       if (cardLast4 && cardBrand) {
-        await tx.execute(sql`
-          INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default)
-          VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)
-          ON CONFLICT (user_id) WHERE is_default = true
-          DO UPDATE SET card_brand = EXCLUDED.card_brand, card_last4 = EXCLUDED.card_last4,
-                        card_holder_name = EXCLUDED.card_holder_name
-        `);
+        const existingCard = await tx.execute(sql`SELECT id FROM payment_methods WHERE user_id = ${userId!} AND is_default = true LIMIT 1`);
+        if (existingCard.rows.length > 0) {
+          await tx.execute(sql`UPDATE payment_methods SET card_brand = ${sanitize(cardBrand)}, card_last4 = ${sanitize(cardLast4)}, card_holder_name = ${sanitize(cardName || 'Card Holder')} WHERE user_id = ${userId!} AND is_default = true`);
+        } else {
+          await tx.execute(sql`INSERT INTO payment_methods (id, user_id, card_brand, card_last4, card_holder_name, is_default) VALUES (gen_random_uuid(), ${userId!}, ${sanitize(cardBrand)}, ${sanitize(cardLast4)}, ${sanitize(cardName || 'Card Holder')}, true)`);
+        }
       }
 
       // Audit log

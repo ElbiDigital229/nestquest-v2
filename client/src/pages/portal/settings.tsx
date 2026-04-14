@@ -376,6 +376,7 @@ function FullSettings() {
     confirmPassword: "",
   });
   const [uploadPreviews, setUploadPreviews] = useState<Record<string, string>>({});
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
   const [uploadingField, setUploadingField] = useState<string | null>(null);
   const [highlightExpiry, setHighlightExpiry] = useState<string | null>(null);
   const passportFileRef = useRef<HTMLInputElement>(null);
@@ -931,11 +932,11 @@ function FullSettings() {
                     Emirates ID — Front
                   </Label>
                   {p?.emiratesIdFrontUrl ? (
-                    <div className="border rounded-lg overflow-hidden">
+                    <div className="border rounded-lg overflow-hidden cursor-pointer" onClick={() => setLightbox({ src: p.emiratesIdFrontUrl, alt: "Emirates ID — Front" })}>
                       <img
                         src={p.emiratesIdFrontUrl}
                         alt="Emirates ID Front"
-                        className="w-full h-32 object-cover"
+                        className="w-full h-32 object-cover hover:opacity-80 transition-opacity"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = "none";
                           (e.target as HTMLImageElement).nextElementSibling?.classList.remove("hidden");
@@ -955,11 +956,11 @@ function FullSettings() {
                     Emirates ID — Back
                   </Label>
                   {p?.emiratesIdBackUrl ? (
-                    <div className="border rounded-lg overflow-hidden">
+                    <div className="border rounded-lg overflow-hidden cursor-pointer" onClick={() => setLightbox({ src: p.emiratesIdBackUrl, alt: "Emirates ID — Back" })}>
                       <img
                         src={p.emiratesIdBackUrl}
                         alt="Emirates ID Back"
-                        className="w-full h-32 object-cover"
+                        className="w-full h-32 object-cover hover:opacity-80 transition-opacity"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = "none";
                           (e.target as HTMLImageElement).nextElementSibling?.classList.remove("hidden");
@@ -1061,11 +1062,11 @@ function FullSettings() {
                       </Button>
                     </div>
                   ) : p?.passportFrontUrl ? (
-                    <div className="border rounded-lg overflow-hidden w-fit">
+                    <div className="border rounded-lg overflow-hidden w-fit cursor-pointer" onClick={() => setLightbox({ src: p.passportFrontUrl, alt: "Passport" })}>
                       <img
                         src={p.passportFrontUrl}
                         alt="Passport"
-                        className="h-32 object-cover"
+                        className="h-32 object-cover hover:opacity-80 transition-opacity"
                         onError={(e) => {
                           (e.target as HTMLImageElement).style.display = "none";
                           (e.target as HTMLImageElement).nextElementSibling?.classList.remove("hidden");
@@ -1149,11 +1150,11 @@ function FullSettings() {
                           </Button>
                         </div>
                       ) : p?.tradeLicenseUrl ? (
-                        <div className="border rounded-lg overflow-hidden w-fit">
+                        <div className="border rounded-lg overflow-hidden w-fit cursor-pointer" onClick={() => setLightbox({ src: p.tradeLicenseUrl, alt: "Trade License" })}>
                           <img
                             src={p.tradeLicenseUrl}
                             alt="Trade License"
-                            className="h-32 object-cover"
+                            className="h-32 object-cover hover:opacity-80 transition-opacity"
                             onError={(e) => {
                               (e.target as HTMLImageElement).style.display = "none";
                               (e.target as HTMLImageElement).nextElementSibling?.classList.remove("hidden");
@@ -1616,6 +1617,33 @@ function FullSettings() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Document image lightbox */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <span className="font-medium text-sm">{lightbox.alt}</span>
+              <button className="h-7 w-7 flex items-center justify-center rounded hover:bg-muted" onClick={() => setLightbox(null)}>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="p-4 flex justify-center bg-muted/30">
+              <img
+                src={lightbox.src}
+                alt={lightbox.alt}
+                className="max-h-[70vh] max-w-full object-contain rounded"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

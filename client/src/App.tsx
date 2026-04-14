@@ -62,6 +62,7 @@ const AdminCompliance = lazy(() => import("@/pages/admin/compliance"));
 const AdminPlans = lazy(() => import("@/pages/admin/plans"));
 const AdminTransactions = lazy(() => import("@/pages/admin/transactions"));
 const AdminStPropertyView = lazy(() => import("@/pages/admin/st-property-view"));
+const AdminSiteSettings = lazy(() => import("@/pages/admin/site-settings"));
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -333,6 +334,11 @@ export default function App() {
         <Route path="/admin/notifications">
           <ProtectedRoute roles={["SUPER_ADMIN"]}>
             <AdminLayout><AdminNotifications /></AdminLayout>
+          </ProtectedRoute>
+        </Route>
+        <Route path="/admin/site-settings">
+          <ProtectedRoute roles={["SUPER_ADMIN"]}>
+            <AdminLayout><AdminSiteSettings /></AdminLayout>
           </ProtectedRoute>
         </Route>
         <Route path="/admin">

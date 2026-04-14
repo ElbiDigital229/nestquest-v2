@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server/index.ts",
+    "dev": "npx vite --config vite.config.ts & tsx server/index.ts",
+    "dev:server": "tsx server/index.ts",
+    "dev:client": "npx vite --config vite.config.ts",
     "build": "vite build",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",

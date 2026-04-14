@@ -47,6 +47,9 @@ export default function HomePage() {
   const [areas, setAreas] = useState<Area[]>([]);
   const [featured, setFeatured] = useState<FeaturedProperty[]>([]);
   const [loading, setLoading] = useState(true);
+  const [heroImage, setHeroImage] = useState<string | null>(null);
+  const [heroTitle, setHeroTitle] = useState("Find Your Perfect Stay");
+  const [heroSubtitle, setHeroSubtitle] = useState("Discover premium short-term rental properties across the UAE");
 
   // Search form
   const [searchArea, setSearchArea] = useState("");
@@ -60,9 +63,13 @@ export default function HomePage() {
     Promise.all([
       api.get<Area[]>("/public/areas").catch(() => []),
       api.get<FeaturedProperty[]>("/public/featured").catch(() => []),
-    ]).then(([areasData, featuredData]) => {
+      api.get<Record<string, string>>("/public/site-settings").catch(() => ({})),
+    ]).then(([areasData, featuredData, settings]) => {
       setAreas(areasData);
       setFeatured(featuredData);
+      if (settings.hero_image_url) setHeroImage(settings.hero_image_url);
+      if (settings.hero_title) setHeroTitle(settings.hero_title);
+      if (settings.hero_subtitle) setHeroSubtitle(settings.hero_subtitle);
       setLoading(false);
     });
   }, []);
@@ -84,20 +91,24 @@ export default function HomePage() {
       <section className="relative min-h-[500px] py-20 md:py-32" style={{ overflow: "visible" }}>
         {/* Background image */}
         <div className="absolute inset-0 z-0">
-          <img
-            src="/uploads/hero-dubai.jpg"
-            alt=""
-            className="w-full h-full object-cover"
-          />
+          {heroImage ? (
+            <img
+              src={heroImage}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-primary/80 to-primary/40" />
+          )}
           <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/30 to-background/80" />
         </div>
         <div className="container max-w-7xl mx-auto px-4 relative z-10">
           <div className="max-w-3xl mx-auto text-center mb-10">
             <h1 className="text-4xl md:text-5xl font-bold tracking-tight mb-4 text-white drop-shadow-lg">
-              Find Your Perfect Stay
+              {heroTitle}
             </h1>
             <p className="text-lg text-white/80 drop-shadow">
-              Discover premium short-term rental properties across the UAE
+              {heroSubtitle}
             </p>
           </div>
 

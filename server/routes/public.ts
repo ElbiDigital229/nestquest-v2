@@ -4,6 +4,25 @@ import { sql } from "drizzle-orm";
 
 const router = Router();
 
+// ── GET /api/public/site-settings ────────────────────
+// Returns public site settings (hero image, etc.)
+router.get("/site-settings", async (_req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT key, value FROM site_settings
+      WHERE key IN ('hero_image_url', 'hero_title', 'hero_subtitle')
+    `);
+    const settings: Record<string, string> = {};
+    for (const row of result.rows as any[]) {
+      settings[row.key] = row.value;
+    }
+    return res.json(settings);
+  } catch (error: any) {
+    console.error("[Public] GET site-settings error:", error);
+    return res.status(500).json({ error: "Failed to fetch site settings" });
+  }
+});
+
 // ── GET /api/public/areas ─────────────────────────────
 // Returns areas with property counts for search autocomplete
 router.get("/areas", async (_req: Request, res: Response) => {

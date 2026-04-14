@@ -14,13 +14,13 @@ export async function checkAllDocumentExpiry(): Promise<void> {
   // Pull expiry dates from the users table profile columns
   const rows = await db.execute(sql`
     SELECT
-      u.id AS "userId",
-      u.emirates_id_expiry AS "eidExpiry",
-      u.passport_expiry AS "passportExpiry",
-      u.trade_license_expiry AS "tradeLicenseExpiry"
-    FROM users u
+      g.user_id AS "userId",
+      g.emirates_id_expiry AS "eidExpiry",
+      g.passport_expiry AS "passportExpiry",
+      g.trade_license_expiry AS "tradeLicenseExpiry"
+    FROM guests g
+    JOIN users u ON u.id = g.user_id
     WHERE u.role NOT IN ('SUPER_ADMIN', 'PM_TEAM_MEMBER')
-      AND u.full_name IS NOT NULL
   `);
 
   const docsToCheck: { userId: string; relatedId: string; label: string; expiryDate: Date }[] = [];

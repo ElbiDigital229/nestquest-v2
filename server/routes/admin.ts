@@ -500,8 +500,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'emirates_id' LIMIT 1),
             'slug', 'emirates_id',
             'label', 'Emirates ID',
-            'frontUrl', u.emirates_id_front_url,
-            'backUrl', u.emirates_id_back_url,
+            'fileUrl', u.emirates_id_front_url,
             'documentNumber', u.emirates_id_number,
             'expiryDate', u.emirates_id_expiry,
             'hasExpiry', true
@@ -510,8 +509,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'passport' LIMIT 1),
             'slug', 'passport',
             'label', 'Passport',
-            'frontUrl', u.passport_front_url,
-            'backUrl', NULL,
+            'fileUrl', u.passport_front_url,
             'documentNumber', u.passport_number,
             'expiryDate', u.passport_expiry,
             'hasExpiry', true
@@ -520,8 +518,7 @@ router.get("/compliance", async (req: Request, res: Response) => {
             'documentTypeId', (SELECT id FROM document_types WHERE slug = 'trade_license' LIMIT 1),
             'slug', 'trade_license',
             'label', 'Trade License',
-            'frontUrl', u.trade_license_url,
-            'backUrl', NULL,
+            'fileUrl', u.trade_license_url,
             'documentNumber', NULL,
             'expiryDate', u.trade_license_expiry,
             'hasExpiry', true
@@ -532,7 +529,11 @@ router.get("/compliance", async (req: Request, res: Response) => {
       ORDER BY u.full_name ASC
     `);
 
-    return res.json(rows.rows);
+    const parsed = rows.rows.map((row: any) => ({
+      ...row,
+      documents: typeof row.documents === "string" ? JSON.parse(row.documents) : row.documents,
+    }));
+    return res.json(parsed);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
@@ -1041,6 +1042,47 @@ router.get("/properties", async (req: Request, res: Response) => {
       ORDER BY p.created_at DESC
     `);
     return res.json(result.rows);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── GET /api/admin/site-settings ──────────────────────
+// Returns all site settings for admin management
+router.get("/site-settings", async (_req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`SELECT key, value, updated_at AS "updatedAt" FROM site_settings ORDER BY key`);
+    const settings: Record<string, string> = {};
+    for (const row of result.rows as any[]) {
+      settings[row.key] = row.value;
+    }
+    return res.json(settings);
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ── PUT /api/admin/site-settings ──────────────────────
+// Upserts site settings (key/value pairs)
+router.put("/site-settings", async (req: Request, res: Response) => {
+  try {
+    const settings = req.body as Record<string, string>;
+    if (!settings || typeof settings !== "object") {
+      return res.status(400).json({ error: "Expected an object of key/value pairs" });
+    }
+
+    const allowedKeys = ["hero_image_url", "hero_title", "hero_subtitle"];
+    const entries = Object.entries(settings).filter(([k]) => allowedKeys.includes(k));
+
+    for (const [key, value] of entries) {
+      await db.execute(sql`
+        INSERT INTO site_settings (key, value, updated_at)
+        VALUES (${key}, ${value}, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = ${value}, updated_at = NOW()
+      `);
+    }
+
+    return res.json({ success: true });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }

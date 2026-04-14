@@ -18,6 +18,7 @@ import {
   ClipboardCheck,
   CreditCard,
   Receipt,
+  Settings,
 } from "lucide-react";
 import NotificationBell from "@/components/notification-bell";
 
@@ -61,6 +62,12 @@ const navItems: NavItem[] = [
     label: "Notifications",
     icon: Bell,
     href: "/admin/notifications",
+  },
+  {
+    kind: "link",
+    label: "Site Settings",
+    icon: Settings,
+    href: "/admin/site-settings",
   },
 ];
 

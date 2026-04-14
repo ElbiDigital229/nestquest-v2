@@ -23,6 +23,7 @@ import { fileURLToPath } from "url";
 import crypto from "crypto";
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
+import rateLimit from "express-rate-limit";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -124,6 +125,47 @@ async function uploadToS3(file: Express.Multer.File): Promise<string> {
   const region = process.env.AWS_REGION || "me-central-1";
   return `https://${process.env.S3_BUCKET}.s3.${region}.amazonaws.com/${key}`;
 }
+
+// ── POST /api/upload/signup — Unauthenticated upload for signup documents ──
+
+const signupUploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: "Too many uploads. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+router.post("/signup", signupUploadLimiter, (req: Request, res: Response) => {
+  upload.single("file")(req, res, async (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({ error: "File exceeds the 10MB limit" });
+        }
+        return res.status(400).json({ error: err.message });
+      }
+      return res.status(400).json({ error: err.message || "File upload failed" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    try {
+      let url: string;
+      if (s3Enabled && s3) {
+        url = await uploadToS3(req.file);
+      } else {
+        url = `/uploads/${(req.file as any).filename}`;
+      }
+      return res.json({ url });
+    } catch (uploadErr: any) {
+      logger.error({ err: uploadErr }, "Signup upload failed");
+      return res.status(500).json({ error: "File upload failed" });
+    }
+  });
+});
 
 // ── POST /api/upload ───────────────────────────────────
 
