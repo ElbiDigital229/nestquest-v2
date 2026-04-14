@@ -18,11 +18,11 @@ export async function runMessageTriggerCron(): Promise<void> {
     const rows = await db.execute(sql`
       SELECT b.id, b.pm_user_id, b.guest_user_id, b.check_in_date, b.check_out_date,
              b.total_nights, p.check_in_time, p.check_out_time, b.access_pin,
-             COALESCE(u.full_name, b.guest_name, 'Guest') AS guest_name,
+             COALESCE(g.full_name, b.guest_name, 'Guest') AS guest_name,
              p.public_name AS property_name
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
-      LEFT JOIN users u ON u.id = b.guest_user_id
+      LEFT JOIN guests g ON g.user_id = b.guest_user_id
       WHERE b.check_out_date = CURRENT_DATE + INTERVAL '1 day'
         AND b.status = 'checked_in'
         AND b.guest_user_id IS NOT NULL

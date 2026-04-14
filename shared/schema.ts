@@ -883,6 +883,14 @@ export const pmSettings = pgTable("pm_settings", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// ── Site Settings (admin-managed key/value config) ────
+
+export const siteSettings = pgTable("site_settings", {
+  key: varchar("key", { length: 100 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // ── Zod Schemas ────────────────────────────────────────
 
 export const insertUserSchema = createInsertSchema(users);
@@ -909,7 +917,10 @@ export const signupSchema = z.object({
     .max(100, "Full name must be at most 100 characters")
     .regex(/^[a-zA-Z\s]+$/, "Full name can only contain letters and spaces")
     .transform(s => s.trim()),
-  phone: z.string().min(8, "Phone number is required"),
+  phone: z.string()
+    .min(8, "Phone number is required")
+    .max(20, "Phone number is too long")
+    .regex(/^\+\d{7,15}$/, "Phone must start with + followed by 7-15 digits"),
   dob: z.string().min(1, "Date of birth is required"),
   nationality: z.string().min(1, "Nationality is required"),
   countryOfResidence: z.string().min(1, "Country of residence is required"),

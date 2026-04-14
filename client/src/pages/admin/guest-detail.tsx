@@ -901,6 +901,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
   const [uploadingFront, setUploadingFront] = useState(false);
   const [uploadingBack, setUploadingBack] = useState(false);
   const [selectedLinkedGuestId, setSelectedLinkedGuestId] = useState<string | null>(null);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [lightboxAlt, setLightboxAlt] = useState("");
   const [selectedConvo, setSelectedConvo] = useState<Conversation | null>(null);
   const [showChangePlan, setShowChangePlan] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1427,7 +1429,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
                           <img
                             src={currentUrl}
                             alt={`Emirates ID ${side === "front" ? "Front" : "Back"}`}
-                            className="w-full h-40 object-cover"
+                            className="w-full h-40 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={() => { setLightboxSrc(currentUrl); setLightboxAlt(`Emirates ID ${side === "front" ? "Front" : "Back"}`); }}
                             onError={(e) => {
                               (e.target as HTMLImageElement).style.display = "none";
                             }}
@@ -1505,7 +1508,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
                     <img
                       src={p.passportFrontUrl}
                       alt="Passport"
-                      className="h-40 object-cover"
+                      className="h-40 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                      onClick={() => { setLightboxSrc(p.passportFrontUrl); setLightboxAlt("Passport"); }}
                       onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
                   ) : (
@@ -1544,7 +1548,8 @@ export default function AdminGuestDetail({ id }: { id: string }) {
                       <img
                         src={p.tradeLicenseUrl}
                         alt="Trade License"
-                        className="h-40 object-cover"
+                        className="h-40 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                        onClick={() => { setLightboxSrc(p.tradeLicenseUrl!); setLightboxAlt("Trade License"); }}
                         onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                       />
                     ) : (
@@ -2130,6 +2135,33 @@ export default function AdminGuestDetail({ id }: { id: string }) {
         open={!!selectedLinkedGuestId}
         onClose={() => setSelectedLinkedGuestId(null)}
       />
+
+      {/* Document image lightbox */}
+      {lightboxSrc && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <div
+            className="relative bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <span className="font-medium text-sm">{lightboxAlt}</span>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setLightboxSrc(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="p-4 flex justify-center bg-muted/30">
+              <img
+                src={lightboxSrc}
+                alt={lightboxAlt}
+                className="max-h-[70vh] max-w-full object-contain rounded"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

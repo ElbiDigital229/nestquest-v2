@@ -2,6 +2,7 @@ import { useState, useRef, useMemo, useEffect } from "react";
 import { Link, useLocation, Redirect } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { slugToRole, ROLE_LABELS } from "@/lib/role-utils";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -65,24 +66,24 @@ const COUNTRIES = [
 ];
 
 const PHONE_CODES = [
-  { code: "+971", label: "+971 (UAE)" },
-  { code: "+966", label: "+966 (Saudi)" },
-  { code: "+968", label: "+968 (Oman)" },
-  { code: "+973", label: "+973 (Bahrain)" },
-  { code: "+974", label: "+974 (Qatar)" },
-  { code: "+965", label: "+965 (Kuwait)" },
-  { code: "+91", label: "+91 (India)" },
-  { code: "+92", label: "+92 (Pakistan)" },
-  { code: "+63", label: "+63 (Philippines)" },
-  { code: "+44", label: "+44 (UK)" },
-  { code: "+1", label: "+1 (US/Canada)" },
-  { code: "+61", label: "+61 (Australia)" },
-  { code: "+49", label: "+49 (Germany)" },
-  { code: "+33", label: "+33 (France)" },
-  { code: "+86", label: "+86 (China)" },
-  { code: "+20", label: "+20 (Egypt)" },
-  { code: "+962", label: "+962 (Jordan)" },
-  { code: "+961", label: "+961 (Lebanon)" },
+  { code: "+971", label: "+971 (UAE)", minLen: 9, maxLen: 9, placeholder: "501234567" },
+  { code: "+966", label: "+966 (Saudi)", minLen: 9, maxLen: 9, placeholder: "512345678" },
+  { code: "+968", label: "+968 (Oman)", minLen: 8, maxLen: 8, placeholder: "91234567" },
+  { code: "+973", label: "+973 (Bahrain)", minLen: 8, maxLen: 8, placeholder: "31234567" },
+  { code: "+974", label: "+974 (Qatar)", minLen: 8, maxLen: 8, placeholder: "31234567" },
+  { code: "+965", label: "+965 (Kuwait)", minLen: 8, maxLen: 8, placeholder: "51234567" },
+  { code: "+91", label: "+91 (India)", minLen: 10, maxLen: 10, placeholder: "9123456789" },
+  { code: "+92", label: "+92 (Pakistan)", minLen: 10, maxLen: 10, placeholder: "3001234567" },
+  { code: "+63", label: "+63 (Philippines)", minLen: 10, maxLen: 10, placeholder: "9171234567" },
+  { code: "+44", label: "+44 (UK)", minLen: 10, maxLen: 10, placeholder: "7911123456" },
+  { code: "+1", label: "+1 (US/Canada)", minLen: 10, maxLen: 10, placeholder: "2025551234" },
+  { code: "+61", label: "+61 (Australia)", minLen: 9, maxLen: 9, placeholder: "412345678" },
+  { code: "+49", label: "+49 (Germany)", minLen: 10, maxLen: 11, placeholder: "15123456789" },
+  { code: "+33", label: "+33 (France)", minLen: 9, maxLen: 9, placeholder: "612345678" },
+  { code: "+86", label: "+86 (China)", minLen: 11, maxLen: 11, placeholder: "13912345678" },
+  { code: "+20", label: "+20 (Egypt)", minLen: 10, maxLen: 10, placeholder: "1012345678" },
+  { code: "+962", label: "+962 (Jordan)", minLen: 9, maxLen: 9, placeholder: "791234567" },
+  { code: "+961", label: "+961 (Lebanon)", minLen: 7, maxLen: 8, placeholder: "1234567" },
 ];
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -180,6 +181,7 @@ type FileFieldKey = "idFrontFile" | "idBackFile" | "passportFrontFile" | "tradeL
 
 export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
   const [, navigate] = useLocation();
+  const { login: setAuthUser, refreshUser } = useAuth();
   const { toast } = useToast();
   const [step, setStep] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -299,9 +301,24 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
     if (!form.email.trim()) errs.email = "Email is required";
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) errs.email = "Please enter a valid email";
 
-    if (!form.phoneNumber.trim()) errs.phoneNumber = "Phone number is required";
-    else if (!/^\d{7,15}$/.test(form.phoneNumber.replace(/\s/g, "")))
-      errs.phoneNumber = "Please enter a valid phone number (7-15 digits)";
+    if (!form.phoneNumber.trim()) {
+      errs.phoneNumber = "Phone number is required";
+    } else {
+      const digits = form.phoneNumber.replace(/\s/g, "");
+      const selectedCode = PHONE_CODES.find((p) => p.code === form.phoneCode);
+      if (!/^\d+$/.test(digits)) {
+        errs.phoneNumber = "Phone number can only contain digits";
+      } else if (selectedCode) {
+        if (digits.length < selectedCode.minLen || digits.length > selectedCode.maxLen) {
+          const expected = selectedCode.minLen === selectedCode.maxLen
+            ? `${selectedCode.minLen} digits`
+            : `${selectedCode.minLen}-${selectedCode.maxLen} digits`;
+          errs.phoneNumber = `Phone number for ${form.phoneCode} must be ${expected}`;
+        }
+      } else if (digits.length < 7 || digits.length > 15) {
+        errs.phoneNumber = "Phone number must be 7-15 digits";
+      }
+    }
 
     if (!form.password) {
       errs.password = "Password is required";
@@ -450,7 +467,8 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
         // For PM: auto-login and go to plan selection step
         if (isPM) {
           try {
-            await api.post("/auth/login", { email: form.email, password: form.password, role: form.role });
+            const loginRes = await api.post<{ user: { id: string; email: string; role: string; name: string } }>("/auth/login", { email: form.email, password: form.password, role: form.role });
+            setAuthUser(loginRes.user);
           } catch {
             // If auto-login fails, still proceed — they can login manually later
           }
@@ -530,7 +548,7 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      const res = await fetch("/api/upload/signup", { method: "POST", credentials: "include", body: formData });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Upload failed" }));
         throw new Error(err.error);
@@ -760,10 +778,15 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
               </SelectContent>
             </Select>
             <Input
-              placeholder="Phone number"
+              placeholder={PHONE_CODES.find((p) => p.code === form.phoneCode)?.placeholder || "Phone number"}
               value={form.phoneNumber}
-              onChange={(e) => updateField("phoneNumber", e.target.value.replace(/[^0-9\s]/g, ""))}
+              onChange={(e) => {
+                const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                const maxLen = PHONE_CODES.find((p) => p.code === form.phoneCode)?.maxLen || 15;
+                updateField("phoneNumber", cleaned.slice(0, maxLen));
+              }}
               className="flex-1"
+              inputMode="numeric"
             />
           </div>
           {errors.phoneNumber && <p className="text-sm text-destructive">{errors.phoneNumber}</p>}
@@ -1531,7 +1554,13 @@ export default function GuestSignup({ roleSlug }: { roleSlug: string }) {
         <p className="text-sm text-muted-foreground mb-6">
           Your documents are pending verification. You will be notified once your KYC is approved.
         </p>
-        <Button onClick={() => navigate(isPM ? (planActivated ? "/portal/dashboard" : "/portal/plans") : `/login/${roleSlug}`)} className="w-full max-w-xs">
+        <Button onClick={() => {
+          if (isPM) {
+            navigate(planActivated ? "/portal/settings" : "/portal/plans");
+          } else {
+            navigate(`/login/${roleSlug}`);
+          }
+        }} className="w-full max-w-xs">
           {isPM ? (planActivated ? "Go to Dashboard" : "Choose a Plan") : "Go to Sign In"}
         </Button>
       </CardContent>
