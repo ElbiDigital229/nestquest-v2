@@ -495,16 +495,19 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                     }
                     return null;
                   })()}
-                  {booking.status === "completed" && isPmOrTeam && (() => {
+                  {["checked_out", "completed"].includes(booking.status) && isPmOrTeam && (() => {
                     const ss = (booking as any).settlementStatus;
                     if (ss === "confirmed" || ss === "paid") {
                       return <span className="text-xs text-green-600">Settled with PO</span>;
                     }
-                    return (
-                      <Button size="sm" variant="outline" onClick={() => setLocation("/portal/settlements")}>
-                        Settle with PO
-                      </Button>
-                    );
+                    if (ss === "pending") {
+                      return (
+                        <Button size="sm" variant="outline" onClick={() => setLocation("/portal/settlements")}>
+                          Settle with PO
+                        </Button>
+                      );
+                    }
+                    return null;
                   })()}
                   {booking.status === "confirmed" && (
                     <>
