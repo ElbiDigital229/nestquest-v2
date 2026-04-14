@@ -2341,7 +2341,7 @@ function ViewBookings({ property }: { property: StPropertyData }) {
                                 <Banknote className="h-3 w-3 mr-1" /> Payout
                               </Button>
                             )}
-                            {b.status === "completed" && b.securityDepositAmount && !["returned", "partially_returned", "forfeited"].includes(b.depositStatus || "") && (
+                            {["checked_out", "completed"].includes(b.status) && b.securityDepositAmount && !["returned", "partially_returned", "forfeited"].includes(b.depositStatus || "") && (
                               <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setDepositBookingId(b.id); setDepositDialogOpen(true); }}>
                                 <RefreshCw className="h-3 w-3 mr-1" /> Deposit
                               </Button>

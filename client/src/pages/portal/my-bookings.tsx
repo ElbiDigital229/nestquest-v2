@@ -483,7 +483,7 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                   {(() => {
                     const ds = (booking as any).depositStatus;
                     const isProcessed = ds === "returned" || ds === "partially_returned" || ds === "forfeited";
-                    if (booking.status === "completed" && isPmOrTeam && booking.securityDepositAmount > 0) {
+                    if (["checked_out", "completed"].includes(booking.status) && isPmOrTeam && booking.securityDepositAmount > 0) {
                       if (isProcessed) {
                         return <span className="text-xs text-green-600">Deposit processed</span>;
                       }
