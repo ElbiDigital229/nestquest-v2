@@ -28,7 +28,7 @@ jobs:
         with:
           switches: -avzr --delete --exclude='node_modules' --exclude='.git' --exclude='.env'
           path: ./
-          remote_path: /home/ubuntu/nestquest/
+          remote_path: /home/ubuntu/nestquest-v2/
           remote_host: ${{ secrets.EC2_HOST }}
           remote_user: ubuntu
           remote_key: ${{ secrets.EC2_SSH_KEY }}
@@ -41,7 +41,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 5m
           script: |
-            cd /home/ubuntu/nestquest
+            cd /home/ubuntu/nestquest-v2
             export $(cat .env | grep -v '^#' | xargs)
             npm ci --omit=dev
             npx drizzle-kit push --force || true
