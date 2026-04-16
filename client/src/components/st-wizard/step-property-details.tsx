@@ -674,7 +674,7 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
                 <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
               )}
               {showResults && searchResults.length > 0 && (
-                <div className="absolute z-[1000] top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-[240px] overflow-y-auto">
+                <div className="absolute z-[2000] top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-[240px] overflow-y-auto">
                   {searchResults.map((result, idx) => (
                     <button
                       key={idx}
