@@ -166,8 +166,9 @@ router.post("/", requirePmPermission("properties.create"), async (req: Request, 
     await logPropertyActivity(result.id, actorId, "property_created", "Property draft created");
 
     return res.status(201).json({ id: result.id });
-  } catch {
-    return res.status(500).json({ error: "Internal server error" });
+  } catch (err: any) {
+    console.error("[POST /st-properties] error:", err);
+    return res.status(500).json({ error: "Internal server error", details: err?.message || String(err) });
   }
 });
 

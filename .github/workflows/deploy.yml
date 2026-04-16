@@ -43,7 +43,15 @@ jobs:
           script: |
             cd /home/ubuntu/nestquest-v2
             export $(cat .env | grep -v '^#' | xargs)
-            npm ci --omit=dev
-            npx drizzle-kit push --force || true
+            # Install ALL deps (including drizzle-kit) so the migration can run
+            npm ci
+            # Apply schema changes
+            npx drizzle-kit push --force || { echo "drizzle-kit push failed"; exit 1; }
+            # Apply any pending raw-SQL migrations (idempotent — uses IF NOT EXISTS)
+            for f in scripts/migrate-*.sql; do
+              [ -f "$f" ] && psql "$DATABASE_URL" -f "$f" || true
+            done
+            # Now drop devDependencies for production runtime
+            npm prune --omit=dev
             pm2 reload nestquest --update-env || pm2 start ecosystem.config.cjs --env production
             pm2 save
