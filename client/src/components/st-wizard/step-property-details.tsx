@@ -660,19 +660,21 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
         {/* Property Location — Map */}
         <div className="mt-4 space-y-3">
           <Label>Property Location</Label>
-          <div className="flex gap-2" ref={searchRef}>
-            <div className="relative flex-1">
+          <div ref={searchRef}>
+            <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 value={mapSearch}
                 onChange={(e) => handleMapSearchChange(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleLocationSearch()}
                 onFocus={() => searchResults.length > 0 && setShowResults(true)}
                 placeholder="Search for an address or area..."
-                className="pl-10"
+                className="pl-10 pr-10"
               />
+              {searchLoading && (
+                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+              )}
               {showResults && searchResults.length > 0 && (
-                <div className="absolute z-[1000] top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-[200px] overflow-y-auto">
+                <div className="absolute z-[1000] top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-[240px] overflow-y-auto">
                   {searchResults.map((result, idx) => (
                     <button
                       key={idx}
@@ -686,14 +688,6 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
                 </div>
               )}
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleLocationSearch}
-              disabled={searchLoading || !mapSearch.trim()}
-            >
-              {searchLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
-            </Button>
           </div>
 
           <div className="h-[300px] rounded-md overflow-hidden border">
