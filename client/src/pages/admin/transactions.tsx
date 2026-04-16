@@ -35,6 +35,7 @@ interface Transaction {
   userRole: string;
   planName: string;
   guestId: string;
+  subscriptionStatus: string | null;
 }
 
 interface TransactionsResponse {
@@ -94,12 +95,20 @@ export default function AdminTransactions() {
     });
   }
 
-  function statusBadge(s: string) {
-    const label = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-    switch (s.toLowerCase()) {
+  function statusBadge(s: string, subStatus: string | null = null) {
+    // If the invoice is pending but the subscription is in trial, show "Trial" instead
+    const effective = s.toLowerCase() === "pending" && subStatus === "trial" ? "trial" : s.toLowerCase();
+    const label = effective.charAt(0).toUpperCase() + effective.slice(1);
+    switch (effective) {
       case "paid":
         return (
           <Badge variant="default" className="bg-green-600 hover:bg-green-700">
+            {label}
+          </Badge>
+        );
+      case "trial":
+        return (
+          <Badge variant="secondary" className="bg-blue-100 text-blue-800 hover:bg-blue-200">
             {label}
           </Badge>
         );
@@ -270,7 +279,7 @@ export default function AdminTransactions() {
                     </td>
                     <td className="px-4 py-3 text-sm">{tx.planName}</td>
                     <td className="px-4 py-3 text-sm font-medium">AED {tx.amount}</td>
-                    <td className="px-4 py-3">{statusBadge(tx.status)}</td>
+                    <td className="px-4 py-3">{statusBadge(tx.status, tx.subscriptionStatus)}</td>
                   </tr>
                 ))}
               </tbody>

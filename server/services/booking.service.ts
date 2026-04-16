@@ -45,6 +45,7 @@ export interface PriceBreakdown {
   securityDeposit: string;
   total: string;
   minimumStay: number;
+  maximumStay: number | null;
   cancellationPolicy: string | null;
 }
 
@@ -223,7 +224,7 @@ export async function calculatePrice(
   guests?: number,
 ): Promise<PriceBreakdown | { error: string; status: number }> {
   const propResult = await db.execute(sql`
-    SELECT p.nightly_rate, p.weekend_rate, p.minimum_stay, p.cleaning_fee,
+    SELECT p.nightly_rate, p.weekend_rate, p.minimum_stay, p.maximum_stay, p.cleaning_fee,
       p.security_deposit_required, p.security_deposit_amount,
       p.max_guests, p.pm_user_id, p.cancellation_policy
     FROM st_properties p WHERE p.id = ${propertyId} AND p.status = 'active'
@@ -238,6 +239,9 @@ export async function calculatePrice(
 
   if (totalNights < (prop.minimum_stay || 1)) {
     return { error: `Minimum stay is ${prop.minimum_stay || 1} nights`, status: 400 };
+  }
+  if (prop.maximum_stay && totalNights > prop.maximum_stay) {
+    return { error: `Maximum stay is ${prop.maximum_stay} nights`, status: 400 };
   }
   if (guests && guests > prop.max_guests) {
     return { error: `Maximum ${prop.max_guests} guests allowed`, status: 400 };
@@ -325,6 +329,7 @@ export async function calculatePrice(
     securityDeposit: securityDeposit.toFixed(2),
     total: total.toFixed(2),
     minimumStay: prop.minimum_stay || 1,
+    maximumStay: prop.maximum_stay || null,
     cancellationPolicy: prop.cancellation_policy,
     pricingBreakdown,
   };
@@ -349,7 +354,10 @@ export async function createBooking(input: CreateBookingInput): Promise<{ id: st
   const { totalNights, weekdayNights, weekendNights } = calculateNights(checkIn, checkOut);
 
   if (totalNights < (prop.minimum_stay || 1)) {
-    throw new ValidationError(`Minimum stay is  nights`);
+    throw new ValidationError(`Minimum stay is ${prop.minimum_stay || 1} nights`);
+  }
+  if (prop.maximum_stay && totalNights > prop.maximum_stay) {
+    throw new ValidationError(`Maximum stay is ${prop.maximum_stay} nights`);
   }
   if (guests > prop.max_guests) {
     throw new ValidationError(`Maximum  guests allowed`);
@@ -470,7 +478,7 @@ export async function confirmBooking(input: ConfirmBookingInput): Promise<void> 
   const booking = bookingResult.rows[0] as any;
 
   if (booking.status !== "requested") {
-    throw new ValidationError(`Cannot confirm a booking with status: `);
+    throw new ValidationError(`Cannot confirm a booking with status: ${booking.status}`);
   }
 
   // KYC gate: registered guests must have verified KYC before booking can be confirmed

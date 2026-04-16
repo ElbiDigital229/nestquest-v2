@@ -426,6 +426,7 @@ export const stProperties = pgTable("st_properties", {
   nightlyRate: text("nightly_rate"),
   weekendRate: text("weekend_rate"),
   minimumStay: integer("minimum_stay").default(1),
+  maximumStay: integer("maximum_stay").default(30),
   cleaningFee: text("cleaning_fee"),
   securityDepositRequired: boolean("security_deposit_required").default(false),
   securityDepositAmount: text("security_deposit_amount"),

@@ -70,7 +70,7 @@ export default function PoProperties() {
                 onClick={() => navigate(`/portal/po-properties/${p.id}`)}
               >
                 {/* Photo */}
-                <div className="h-40 bg-muted relative">
+                <div className="h-40 bg-muted relative overflow-hidden">
                   {p.coverPhoto ? (
                     <img src={p.coverPhoto} alt={p.name || "Property"} className="w-full h-full object-cover" />
                   ) : (
@@ -78,7 +78,7 @@ export default function PoProperties() {
                       <Home className="h-8 w-8 text-muted-foreground/30" />
                     </div>
                   )}
-                  <Badge className={`absolute top-2 right-2 ${badge.className}`}>{badge.label}</Badge>
+                  <Badge className={`absolute top-2 left-2 ${badge.className}`}>{badge.label}</Badge>
                 </div>
 
                 {/* Info */}

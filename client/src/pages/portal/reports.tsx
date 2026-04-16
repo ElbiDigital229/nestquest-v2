@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 interface EarningsData {
   totalCommission: string;
   totalBookings: number;
+  activeBookings: number;
   totalBookingIncome: string;
   totalOwnerPayouts: string;
   percentageEarnings: string;
@@ -179,7 +180,7 @@ export default function ReportsPage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground font-medium">Active Bookings</p>
-                <p className="text-2xl font-bold text-purple-700">{data?.totalBookings || 0}</p>
+                <p className="text-2xl font-bold text-purple-700">{data?.activeBookings || 0}</p>
               </div>
             </div>
           </CardContent>

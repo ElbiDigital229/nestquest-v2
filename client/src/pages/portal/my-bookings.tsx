@@ -311,22 +311,62 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
       {!isLoading && filtered.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {(() => {
-            const totalReceived = filtered.reduce((s, b) => s + Number(b.totalAmount || 0), 0);
-            const totalDeposits = filtered.reduce((s, b) => s + Number(b.securityDepositAmount || 0), 0);
-            const revenue = totalReceived - totalDeposits;
+            const totalAmount = filtered.reduce((s, b) => s + Number(b.totalAmount || 0), 0);
+            // For guests: deposits are "pending" (still held) for active bookings — not for terminal states
+            const terminalStates = ["cancelled", "declined", "expired", "completed"];
+            const pendingDeposits = filtered
+              .filter((b) => !terminalStates.includes(b.status))
+              .reduce((s, b) => s + Number(b.securityDepositAmount || 0), 0);
+
+            if (isPmOrTeam) {
+              // PM revenue is only counted for confirmed+ bookings (not requested, cancelled, declined, expired)
+              const earnedStates = ["confirmed", "checked_in", "checked_out", "completed"];
+              const earnedBookings = filtered.filter((b) => earnedStates.includes(b.status));
+              // Rental revenue counts the rent (totalAmount minus deposit) from earned bookings
+              const earnedRevenue = earnedBookings.reduce(
+                (s, b) => s + (Number(b.totalAmount || 0) - Number(b.securityDepositAmount || 0)),
+                0,
+              );
+              // Deposits "currently held" — only count bookings where deposit hasn't been returned
+              // (Completed bookings have had their deposit processed back to the guest)
+              const heldDepositStates = ["confirmed", "checked_in", "checked_out"];
+              const heldDeposits = filtered
+                .filter((b) => heldDepositStates.includes(b.status))
+                .reduce((s, b) => s + Number(b.securityDepositAmount || 0), 0);
+              // Total received = rental revenue PMs keep + deposits currently held
+              const totalReceived = earnedRevenue + heldDeposits;
+              return (
+                <>
+                  <div className="rounded-lg border p-3 bg-emerald-50/50">
+                    <p className="text-[10px] text-muted-foreground">Rental Revenue</p>
+                    <p className="text-lg font-bold text-emerald-700">{formatCurrency(earnedRevenue)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-amber-50/50">
+                    <p className="text-[10px] text-muted-foreground">Security Deposits</p>
+                    <p className="text-lg font-bold text-amber-700">{formatCurrency(heldDeposits)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-blue-50/50">
+                    <p className="text-[10px] text-muted-foreground">Total Received</p>
+                    <p className="text-lg font-bold text-blue-700">{formatCurrency(totalReceived)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3 bg-purple-50/50">
+                    <p className="text-[10px] text-muted-foreground">Bookings</p>
+                    <p className="text-lg font-bold text-purple-700">{filtered.length}</p>
+                  </div>
+                </>
+              );
+            }
+
+            // Guest view: show amounts from the guest's perspective
             return (
               <>
-                <div className="rounded-lg border p-3 bg-emerald-50/50">
-                  <p className="text-[10px] text-muted-foreground">Rental Revenue</p>
-                  <p className="text-lg font-bold text-emerald-700">{formatCurrency(revenue)}</p>
+                <div className="rounded-lg border p-3 bg-blue-50/50">
+                  <p className="text-[10px] text-muted-foreground">Total Paid</p>
+                  <p className="text-lg font-bold text-blue-700">{formatCurrency(totalAmount)}</p>
                 </div>
                 <div className="rounded-lg border p-3 bg-amber-50/50">
-                  <p className="text-[10px] text-muted-foreground">Security Deposits</p>
-                  <p className="text-lg font-bold text-amber-700">{formatCurrency(totalDeposits)}</p>
-                </div>
-                <div className="rounded-lg border p-3 bg-blue-50/50">
-                  <p className="text-[10px] text-muted-foreground">Total Received</p>
-                  <p className="text-lg font-bold text-blue-700">{formatCurrency(totalReceived)}</p>
+                  <p className="text-[10px] text-muted-foreground">Security Deposit Pending</p>
+                  <p className="text-lg font-bold text-amber-700">{formatCurrency(pendingDeposits)}</p>
                 </div>
                 <div className="rounded-lg border p-3 bg-purple-50/50">
                   <p className="text-[10px] text-muted-foreground">Bookings</p>
@@ -405,10 +445,18 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                       <Button
                         size="sm"
                         onClick={async () => {
-                          await api.patch(`/bookings/${booking.id}/confirm`);
-                          queryClient.invalidateQueries({ queryKey });
-                          queryClient.invalidateQueries({ queryKey: ["bookings"] });
-                          toast({ title: "Booking confirmed" });
+                          try {
+                            await api.patch(`/bookings/${booking.id}/confirm`);
+                            queryClient.invalidateQueries({ queryKey });
+                            queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                            toast({ title: "Booking confirmed" });
+                          } catch (err: any) {
+                            toast({
+                              title: "Could not confirm booking",
+                              description: err?.message || "An error occurred",
+                              variant: "destructive",
+                            });
+                          }
                         }}
                       >
                         <CheckCircle className="h-4 w-4 mr-1" />
@@ -418,10 +466,18 @@ export default function MyBookings({ propertyId, embedded }: { propertyId?: stri
                         variant="destructive"
                         size="sm"
                         onClick={async () => {
-                          await api.patch(`/bookings/${booking.id}/decline`, { reason: "Declined by PM" });
-                          queryClient.invalidateQueries({ queryKey });
-                          queryClient.invalidateQueries({ queryKey: ["bookings"] });
-                          toast({ title: "Booking declined" });
+                          try {
+                            await api.patch(`/bookings/${booking.id}/decline`, { reason: "Declined by PM" });
+                            queryClient.invalidateQueries({ queryKey });
+                            queryClient.invalidateQueries({ queryKey: ["bookings"] });
+                            toast({ title: "Booking declined" });
+                          } catch (err: any) {
+                            toast({
+                              title: "Could not decline booking",
+                              description: err?.message || "An error occurred",
+                              variant: "destructive",
+                            });
+                          }
                         }}
                       >
                         <XCircle className="h-4 w-4 mr-1" />

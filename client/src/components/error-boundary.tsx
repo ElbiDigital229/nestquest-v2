@@ -30,6 +30,11 @@ export class ErrorBoundary extends React.Component<
           <p className="text-muted-foreground max-w-md">
             An unexpected error occurred. Please try reloading the page.
           </p>
+          {this.state.error && (
+            <p className="text-xs text-muted-foreground bg-muted rounded-md px-4 py-2 max-w-lg font-mono">
+              {this.state.error.message}
+            </p>
+          )}
           <button
             onClick={() => window.location.reload()}
             className="mt-2 px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"

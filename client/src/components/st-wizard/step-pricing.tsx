@@ -66,6 +66,7 @@ export default function StepPricing({ property, onUpdate }: StepProps) {
   const [nightlyRate, setNightlyRate] = useState(property.nightlyRate ?? "");
   const [weekendRate, setWeekendRate] = useState(property.weekendRate ?? "");
   const [minimumStay, setMinimumStay] = useState(property.minimumStay ?? 1);
+  const [maximumStay, setMaximumStay] = useState(property.maximumStay ?? 30);
 
   // Fees
   const [cleaningFee, setCleaningFee] = useState(property.cleaningFee ?? "");
@@ -210,6 +211,19 @@ export default function StepPricing({ property, onUpdate }: StepProps) {
               onChange={(v) => {
                 setMinimumStay(v);
                 updateField("minimumStay", v);
+              }}
+            />
+          </div>
+
+          {/* Maximum Stay */}
+          <div className="space-y-1.5">
+            <Label>Maximum Stay (nights)</Label>
+            <Counter
+              value={maximumStay}
+              min={1}
+              onChange={(v) => {
+                setMaximumStay(v);
+                updateField("maximumStay", v);
               }}
             />
           </div>

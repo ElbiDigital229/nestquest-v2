@@ -24,6 +24,9 @@ import {
   Flame,
   Droplets,
   Loader2,
+  CheckCircle2,
+  X,
+  ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -321,62 +324,22 @@ export default function StepAgreement({
           </div>
           <Separator className="mb-4" />
 
-          <div className="space-y-4">
+          <div className="space-y-6">
             {CASH_DOCUMENT_TYPES.map((docType) => {
               const existingDocs = getDocsByType(docType.key);
               const isUploading = uploadingType === docType.key;
+              const hasDoc = existingDocs.length > 0;
 
               return (
-                <div
-                  key={docType.key}
-                  className="rounded-md border p-4 space-y-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Label className="text-sm font-medium">
-                        {docType.label}
-                      </Label>
-                      {docType.required && (
-                        <span className="text-xs text-destructive font-medium">
-                          Required
-                        </span>
-                      )}
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={isUploading || (docType.hasExpiry && !docExpiryDates[docType.key])}
-                      onClick={() => fileInputRefs.current[docType.key]?.click()}
-                    >
-                      {isUploading ? (
-                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                      ) : (
-                        <Upload className="h-4 w-4 mr-1.5" />
-                      )}
-                      {isUploading ? "Uploading..." : "Upload"}
-                    </Button>
-                    <input
-                      ref={(el) => {
-                        fileInputRefs.current[docType.key] = el;
-                      }}
-                      type="file"
-                      className="hidden"
-                      accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          handleFileUpload(docType.key, docType.label, file, docType.hasExpiry);
-                          e.target.value = "";
-                        }
-                      }}
-                    />
-                  </div>
+                <div key={docType.key} className="space-y-2">
+                  <Label>
+                    {docType.label} {docType.required && <span className="text-destructive">*</span>}
+                  </Label>
 
-                  {/* Expiry date input for documents that have expiry */}
+                  {/* Expiry date — always show above upload area */}
                   {docType.hasExpiry && (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">
                         Expiry Date <span className="text-destructive">*</span>
                       </Label>
                       <Input
@@ -390,49 +353,122 @@ export default function StepAgreement({
                         }}
                         className="max-w-[200px]"
                       />
-                      {existingDocs.length === 0 && (
-                        <p className="text-xs text-muted-foreground">
-                          Set expiry date before uploading
-                        </p>
-                      )}
                     </div>
                   )}
 
-                  {/* Uploaded documents */}
-                  {existingDocs.length > 0 && (
-                    <div className="space-y-2">
-                      {existingDocs.map((doc: Document) => (
-                        <div
-                          key={doc.id}
-                          className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2"
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                            <a
-                              href={doc.fileUrl || "#"}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-sm text-primary hover:underline truncate"
-                            >
-                              {doc.name || docType.label}
-                            </a>
-                            {doc.hasExpiry && doc.expiryDate && (
-                              <span className="text-xs text-muted-foreground shrink-0">
-                                Expires: {doc.expiryDate}
-                              </span>
-                            )}
+                  <input
+                    ref={(el) => {
+                      fileInputRefs.current[docType.key] = el;
+                    }}
+                    type="file"
+                    className="hidden"
+                    accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        handleFileUpload(docType.key, docType.label, file, docType.hasExpiry);
+                        e.target.value = "";
+                      }
+                    }}
+                  />
+
+                  {hasDoc ? (
+                    /* ── Uploaded state ── */
+                    <div className="border-2 border-green-500 rounded-lg overflow-hidden bg-green-50/50">
+                      {/* File preview — image or icon */}
+                      {existingDocs.map((doc: Document) => {
+                        const isImage = doc.fileUrl?.match(/\.(jpg|jpeg|png|webp)$/i);
+                        return (
+                          <div key={doc.id}>
+                            <div className="relative bg-muted/30">
+                              {isImage ? (
+                                <img
+                                  src={doc.fileUrl || ""}
+                                  alt={doc.name || docType.label}
+                                  className="w-full h-48 object-contain"
+                                />
+                              ) : (
+                                <div className="w-full h-48 flex flex-col items-center justify-center gap-2">
+                                  <FileText className="h-12 w-12 text-muted-foreground" />
+                                  <span className="text-sm text-muted-foreground">Document uploaded</span>
+                                </div>
+                              )}
+                              {/* Remove button */}
+                              <button
+                                type="button"
+                                onClick={() => deleteDocMutation.mutate(doc.id)}
+                                disabled={deleteDocMutation.isPending}
+                                className="absolute top-2 right-2 h-7 w-7 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center hover:bg-destructive/90 transition-colors shadow-md"
+                              >
+                                {deleteDocMutation.isPending ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <X className="h-4 w-4" />
+                                )}
+                              </button>
+                            </div>
+                            {/* File info */}
+                            <div className="px-4 py-3 flex items-center justify-between border-t border-green-200">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                                <a
+                                  href={doc.fileUrl || "#"}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm font-medium text-green-700 truncate hover:underline"
+                                >
+                                  {doc.name || docType.label}
+                                </a>
+                              </div>
+                              {doc.hasExpiry && doc.expiryDate && (
+                                <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                                  Expires: {doc.expiryDate}
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
-                            onClick={() => deleteDocMutation.mutate(doc.id)}
-                            disabled={deleteDocMutation.isPending}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    /* ── Empty upload state ── */
+                    <div
+                      className={cn(
+                        "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all hover:border-primary/50 hover:bg-primary/5",
+                        docType.hasExpiry && !docExpiryDates[docType.key]
+                          ? "opacity-50 cursor-not-allowed"
+                          : "border-muted-foreground/25",
+                      )}
+                      onClick={() => {
+                        if (docType.hasExpiry && !docExpiryDates[docType.key]) return;
+                        fileInputRefs.current[docType.key]?.click();
+                      }}
+                    >
+                      {isUploading ? (
+                        <div className="flex flex-col items-center gap-3">
+                          <Loader2 className="h-8 w-8 text-primary animate-spin" />
+                          <p className="text-sm text-muted-foreground">Uploading...</p>
                         </div>
-                      ))}
+                      ) : (
+                        <div className="flex flex-col items-center gap-3 text-muted-foreground">
+                          <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
+                            <ImageIcon className="h-6 w-6" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-foreground">Click to upload</p>
+                            <p className="text-xs mt-1">or drag and drop your file here</p>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs">
+                            <span className="px-2 py-0.5 rounded bg-muted font-medium">PDF</span>
+                            <span className="px-2 py-0.5 rounded bg-muted font-medium">JPG</span>
+                            <span className="px-2 py-0.5 rounded bg-muted font-medium">PNG</span>
+                            <span className="px-2 py-0.5 rounded bg-muted font-medium">DOC</span>
+                          </div>
+                          {docType.hasExpiry && !docExpiryDates[docType.key] && (
+                            <p className="text-xs text-amber-600">Set expiry date first</p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

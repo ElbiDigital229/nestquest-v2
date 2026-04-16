@@ -522,11 +522,18 @@ function ViewPhotos({ property }: { property: StPropertyData }) {
           <p className="text-muted-foreground">No photos uploaded yet.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {photos.map((photo: any, i: number) => (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          {photos
+            .sort((a: any, b: any) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
+            .map((photo: any, i: number) => (
             <div
               key={photo.id || i}
-              className="relative rounded-lg overflow-hidden border bg-muted aspect-[4/3]"
+              className={cn(
+                "relative rounded-lg overflow-hidden border bg-muted",
+                photo.isCover
+                  ? "col-span-2 row-span-2 aspect-[4/3]"
+                  : "aspect-[4/3]",
+              )}
             >
               <img
                 src={photo.url || photo.fileUrl}
@@ -2086,15 +2093,25 @@ function ViewBookings({ property }: { property: StPropertyData }) {
   };
 
   // ── Mutations ──
+  const errorToast = (action: string) => (err: any) => {
+    toast({
+      title: `Could not ${action}`,
+      description: err?.message || "An error occurred",
+      variant: "destructive",
+    });
+  };
+
   const confirmMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/bookings/${id}/confirm`),
     onSuccess: () => { invalidate(); toast({ title: "Booking confirmed" }); },
+    onError: errorToast("confirm booking"),
   });
 
   const declineMutation = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
       api.patch(`/bookings/${id}/decline`, { reason }),
     onSuccess: () => { invalidate(); setDeclineDialogOpen(false); setDeclineReason(""); toast({ title: "Booking declined" }); },
+    onError: errorToast("decline booking"),
   });
 
   const checkInMutation = useMutation({
@@ -2104,6 +2121,7 @@ function ViewBookings({ property }: { property: StPropertyData }) {
       const pin = data?.data?.accessPin;
       toast({ title: "Guest checked in", description: pin ? `Access PIN: ${pin}` : undefined });
     },
+    onError: errorToast("check in guest"),
   });
 
   const checkOutMutation = useMutation({
@@ -2114,16 +2132,19 @@ function ViewBookings({ property }: { property: StPropertyData }) {
       setCoForm({ condition: "good", damageNotes: "", damagePhotos: "", checklist: DEFAULT_CHECKOUT_CHECKLIST });
       toast({ title: "Guest checked out" });
     },
+    onError: errorToast("check out guest"),
   });
 
   const completeMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/bookings/${id}/complete`),
     onSuccess: () => { invalidate(); toast({ title: "Booking completed" }); },
+    onError: errorToast("complete booking"),
   });
 
   const cancelMutation = useMutation({
     mutationFn: (id: string) => api.patch(`/bookings/${id}/cancel`),
     onSuccess: () => { invalidate(); toast({ title: "Booking cancelled" }); },
+    onError: errorToast("cancel booking"),
   });
 
   const manualBookingMutation = useMutation({
@@ -2133,6 +2154,7 @@ function ViewBookings({ property }: { property: StPropertyData }) {
       setMbForm({ guestName: "", guestEmail: "", guestPhone: "", checkIn: "", checkOut: "", guests: "1", source: "website", externalRef: "", paymentMethod: "", notes: "" });
       toast({ title: "Booking created" });
     },
+    onError: errorToast("create booking"),
   });
 
   const blockDatesMutation = useMutation({
@@ -2142,6 +2164,7 @@ function ViewBookings({ property }: { property: StPropertyData }) {
       setBdForm({ startDate: "", endDate: "", reason: "" });
       toast({ title: "Dates blocked" });
     },
+    onError: errorToast("block dates"),
   });
 
   const depositReturnMutation = useMutation({

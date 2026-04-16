@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { db } from "../db/index";
-import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas, pmPoLinks, users } from "../../shared/schema";
+import { stProperties, stPropertyPhotos, stPropertyAmenities, stPropertyPolicies, stPropertyDocuments, stAcquisitionDetails, stPaymentSchedules, areas, pmPoLinks, users, pmPoSettlements } from "../../shared/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/auth";
 import { logPropertyActivity } from "../utils/property-activity";
@@ -236,6 +236,7 @@ router.get("/reports/earnings", requirePmPermission("financials.view"), async (r
     const totalsResult = await db.execute(sql`
       SELECT
         COUNT(b.id)::int AS "totalBookings",
+        COUNT(CASE WHEN b.status IN ('confirmed', 'checked_in') THEN 1 END)::int AS "activeBookings",
         COALESCE(SUM(b.total_amount::decimal), 0) AS "totalBookingIncome",
         COALESCE(SUM(b.commission_amount::decimal), 0) AS "totalCommission",
         COALESCE(SUM(b.owner_payout_amount::decimal), 0) AS "totalOwnerPayouts",
@@ -284,6 +285,7 @@ router.get("/reports/earnings", requirePmPermission("financials.view"), async (r
     return res.json({
       totalCommission: parseFloat(totals.totalCommission || "0").toFixed(2),
       totalBookings: totals.totalBookings || 0,
+      activeBookings: totals.activeBookings || 0,
       totalBookingIncome: parseFloat(totals.totalBookingIncome || "0").toFixed(2),
       totalOwnerPayouts: parseFloat(totals.totalOwnerPayouts || "0").toFixed(2),
       // Percentage breakdown
@@ -317,6 +319,39 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
     const userId = (userRole === "SUPER_ADMIN" && req.query.pmUserId)
       ? req.query.pmUserId as string
       : isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
+
+    // Auto-create monthly fixed-fee settlements for the current month if missing.
+    // Each fixed_monthly property generates a PO → PM settlement of commission_value AED per month.
+    const now = new Date();
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const monthStart = `${monthKey}-01`;
+    await db.execute(sql`
+      INSERT INTO pm_po_settlements (id, property_id, from_user_id, to_user_id, amount, reason, status, notes, created_at, updated_at)
+      SELECT
+        gen_random_uuid()::text,
+        p.id,
+        p.po_user_id,
+        p.pm_user_id,
+        p.commission_value,
+        'pm_commission',
+        'pending',
+        ${`Monthly management fee — ${monthKey}`},
+        NOW(), NOW()
+      FROM st_properties p
+      WHERE p.commission_type = 'fixed_monthly'
+        AND p.status = 'active'
+        AND p.po_user_id IS NOT NULL
+        AND p.pm_user_id IS NOT NULL
+        AND p.commission_value IS NOT NULL
+        AND (p.pm_user_id = ${userId} OR p.po_user_id = ${userId})
+        AND NOT EXISTS (
+          SELECT 1 FROM pm_po_settlements s
+          WHERE s.property_id = p.id
+            AND s.reason = 'pm_commission'
+            AND s.created_at >= ${monthStart}::date
+            AND s.created_at < (${monthStart}::date + INTERVAL '1 month')
+        )
+    `);
 
     // Get settlements where user is either from or to
     const result = await db.execute(sql`
@@ -377,12 +412,73 @@ router.get("/settlements", requirePmPermission("financials.view"), async (req: R
   }
 });
 
+// ── POST /settlements — Create a manual settlement (e.g. PO paying PM monthly fee) ──
+
+router.post("/settlements", async (req: Request, res: Response) => {
+  try {
+    const userRole = req.session.userRole;
+    if (!userRole || !["PROPERTY_OWNER", "PROPERTY_MANAGER", "PM_TEAM_MEMBER"].includes(userRole)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const { toUserId, propertyId, amount, reason, notes } = req.body;
+
+    if (!toUserId || !propertyId || !amount || !reason) {
+      return res.status(400).json({ error: "Missing required fields: toUserId, propertyId, amount, reason" });
+    }
+
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ error: "Amount must be a positive number" });
+    }
+
+    const allowedReasons = ["pm_commission", "owner_payout", "expense_reimbursement", "deposit_forfeiture", "guest_refund"];
+    if (!allowedReasons.includes(reason)) {
+      return res.status(400).json({ error: "Invalid reason" });
+    }
+
+    const fromUserId = req.session.userId!;
+
+    // Verify property exists and the user is either the PM or the PO
+    const propResult = await db.execute(sql`
+      SELECT pm_user_id, po_user_id FROM st_properties WHERE id = ${propertyId} LIMIT 1
+    `);
+    if (propResult.rows.length === 0) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+    const prop = propResult.rows[0] as any;
+    const involvedUsers = [prop.pm_user_id, prop.po_user_id];
+    if (!involvedUsers.includes(fromUserId) || !involvedUsers.includes(toUserId)) {
+      return res.status(403).json({ error: "You can only create settlements between the property's PM and PO" });
+    }
+
+    const [settlement] = await db.insert(pmPoSettlements).values({
+      propertyId,
+      fromUserId,
+      toUserId,
+      amount: numAmount.toFixed(2),
+      reason,
+      notes: notes || null,
+      status: "pending",
+    }).returning();
+
+    return res.json({ settlement });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Internal server error" });
+  }
+});
+
 // ── PATCH /settlements/:id/pay — Mark settlement as paid ──
 
 router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { notes, proofUrl } = req.body;
+
+    if (!proofUrl || typeof proofUrl !== "string" || !proofUrl.trim()) {
+      return res.status(400).json({ error: "Payment proof is required" });
+    }
+
     const isPmOrTeam = req.session.userRole === "PROPERTY_MANAGER" || req.session.userRole === "PM_TEAM_MEMBER";
     const resolvedId = isPmOrTeam ? await resolvePmId(req) : req.session.userId!;
 
@@ -392,7 +488,7 @@ router.patch("/settlements/:id/pay", requirePmPermission("financials.manage"), a
     if (result.rows.length === 0) return res.status(404).json({ error: "Settlement not found" });
 
     await db.execute(sql`
-      UPDATE pm_po_settlements SET status = 'confirmed', paid_at = NOW(), confirmed_at = NOW(), notes = ${notes || null}, proof_url = ${proofUrl || null}, updated_at = NOW()
+      UPDATE pm_po_settlements SET status = 'confirmed', paid_at = NOW(), confirmed_at = NOW(), notes = ${notes || null}, proof_url = ${proofUrl}, updated_at = NOW()
       WHERE id = ${id}
     `);
 
@@ -635,9 +731,7 @@ router.get("/analytics", requirePmPermission("financials.view"), async (req: Req
         ), 0)::numeric(10,2) AS revenue,
         COUNT(b.id)::int AS bookings,
         COALESCE(AVG(b.total_nights), 0)::numeric(10,2) AS avg_stay,
-        COALESCE(AVG(
-          EXTRACT(EPOCH FROM (b.check_in_date - b.created_at::date)) / 86400
-        ), 0)::numeric(10,1) AS avg_lead_days
+        COALESCE(AVG(b.check_in_date - b.created_at::date), 0)::numeric(10,1) AS avg_lead_days
       FROM st_bookings b
       JOIN st_properties p ON p.id = b.property_id
       WHERE p.pm_user_id = ${pmUserId}
@@ -770,7 +864,7 @@ router.get("/analytics", requirePmPermission("financials.view"), async (req: Req
     });
   } catch (err: any) {
     console.error("[Analytics] error:", err);
-    return res.status(500).json({ error: "Failed to load analytics" });
+    return res.status(500).json({ error: "Failed to load analytics", details: err?.message || String(err) });
   }
 });
 
@@ -872,7 +966,7 @@ router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request
       "addressLine1", "addressLine2", "city", "zipCode", "latitude", "longitude", "areaId",
       "parkingSpaces", "parkingType", "accessType", "lockDeviceId",
       "publicName", "shortDescription", "longDescription", "internalNotes",
-      "nightlyRate", "weekendRate", "minimumStay", "cleaningFee",
+      "nightlyRate", "weekendRate", "minimumStay", "maximumStay", "cleaningFee",
       "securityDepositRequired", "securityDepositAmount",
       "acceptedPaymentMethods", "bankAccountBelongsTo", "bankName",
       "accountHolderName", "accountNumber", "iban", "swiftCode", "paymentMethodConfig",
@@ -928,7 +1022,7 @@ router.patch("/:id", requirePmPermission("properties.edit"), async (req: Request
         action = "owner_removed"; desc = "Property owner removed";
       } else if (updates.acquisitionType !== undefined) {
         action = "acquisition_updated"; desc = `Acquisition type set to ${updates.acquisitionType}`;
-      } else if (changedKeys.some(k => ["nightlyRate", "weekendRate", "minimumStay", "cleaningFee", "securityDepositRequired", "securityDepositAmount"].includes(k))) {
+      } else if (changedKeys.some(k => ["nightlyRate", "weekendRate", "minimumStay", "maximumStay", "cleaningFee", "securityDepositRequired", "securityDepositAmount"].includes(k))) {
         action = "pricing_updated"; desc = "Pricing updated";
       } else if (changedKeys.some(k => ["checkInTime", "checkOutTime", "cancellationPolicy"].includes(k))) {
         action = "policies_updated"; desc = "Policies updated";
@@ -1076,6 +1170,23 @@ router.post("/:id/publish", requirePmPermission("properties.edit"), async (req: 
       return res.status(400).json({
         error: "Minimum 5 photos required to publish",
         photoCount: photoCount.count,
+      });
+    }
+
+    // Validate required documents
+    const docs = await db
+      .select({ documentType: stPropertyDocuments.documentType })
+      .from(stPropertyDocuments)
+      .where(eq(stPropertyDocuments.propertyId, id));
+
+    const docTypes = docs.map((d) => d.documentType);
+    const requiredDocs = ["title_deed", "spa", "noc", "dtcm"];
+    const missingDocs = requiredDocs.filter((t) => !docTypes.includes(t));
+
+    if (missingDocs.length > 0) {
+      return res.status(400).json({
+        error: "Missing required documents: " + missingDocs.join(", "),
+        missingDocuments: missingDocs,
       });
     }
 
@@ -2058,7 +2169,7 @@ router.get("/:id/calendar-pricing", requirePmPermission("properties.view"), asyn
     // Property defaults
     const propResult = await db.execute(sql`
       SELECT nightly_rate AS "nightlyRate", weekend_rate AS "weekendRate",
-        minimum_stay AS "minimumStay", cleaning_fee AS "cleaningFee"
+        minimum_stay AS "minimumStay", maximum_stay AS "maximumStay", cleaning_fee AS "cleaningFee"
       FROM st_properties WHERE id = ${id}
     `);
     const defaults = propResult.rows[0] as any || {};
