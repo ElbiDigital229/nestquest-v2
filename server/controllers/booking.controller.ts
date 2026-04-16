@@ -64,8 +64,8 @@ export async function calculatePriceHandler(req: Request, res: Response): Promis
     if ("error" in result) return res.status(result.status).json({ error: result.error });
     return res.json(result);
   } catch (err: any) {
-    logger.error({ err }, "calculatePrice error");
-    return res.status(500).json({ error: "Failed to calculate price" });
+    logger.error({ err, propertyId, checkIn, checkOut }, "calculatePrice error");
+    return res.status(500).json({ error: "Failed to calculate price", details: err?.message || String(err) });
   }
 }
 
