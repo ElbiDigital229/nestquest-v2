@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute, useLocation } from "wouter";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -75,7 +76,7 @@ function isStepComplete(step: number, data: StPropertyData): boolean {
     case 2:
       return !!(data.publicName && data.shortDescription);
     case 3:
-      return data.photosCount >= 1;
+      return data.photosCount >= 5;
     case 4:
       return (data.amenities?.length ?? 0) >= 1;
     case 5:
@@ -117,6 +118,7 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
   const id = propId || params?.id;
 
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [currentStep, setCurrentStep] = useState(1);
   const [isDirty, setIsDirty] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
@@ -199,7 +201,14 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
           setTimeout(() => setSaveStatus("idle"), 3000);
         } catch (err: any) {
           setSaveStatus("idle");
-          alert(err?.message || "Failed to publish property");
+          const msg = err?.message || "Failed to publish property";
+          // Navigate to the relevant step based on the error
+          if (msg.toLowerCase().includes("photo")) {
+            setCurrentStep(3);
+          } else if (msg.toLowerCase().includes("document")) {
+            setCurrentStep(8);
+          }
+          toast({ title: "Cannot publish", description: msg, variant: "destructive" });
         }
       } else if (newStatus === "inactive") {
         try {
@@ -210,7 +219,7 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
           setTimeout(() => setSaveStatus("idle"), 3000);
         } catch (err: any) {
           setSaveStatus("idle");
-          alert(err?.message || "Failed to deactivate property");
+          toast({ title: "Failed to deactivate", description: err?.message, variant: "destructive" });
         }
       } else {
         saveMutation.mutate({ status: newStatus });
@@ -354,16 +363,23 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
               const complete = isStepComplete(step.number, property);
               const isCurrent = step.number === currentStep;
               const StepIcon = step.icon;
+              // Allow navigating to a step only if all previous steps are complete
+              const canNavigate = step.number === 1 || STEPS.slice(0, step.number - 1).every(
+                (s) => isStepComplete(s.number, property),
+              );
 
               return (
                 <button
                   key={step.number}
-                  onClick={() => setCurrentStep(step.number)}
+                  onClick={() => canNavigate && setCurrentStep(step.number)}
+                  disabled={!canNavigate}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors text-left",
-                    isCurrent
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    !canNavigate
+                      ? "opacity-50 cursor-not-allowed text-muted-foreground"
+                      : isCurrent
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
                 >
                   {/* Completion indicator */}
@@ -466,6 +482,7 @@ export default function StPropertyWizard({ id: propId }: { id?: string } = {}) {
             {currentStep < STEPS.length ? (
               <Button
                 onClick={() => setCurrentStep(currentStep + 1)}
+                disabled={!isStepComplete(currentStep, property)}
               >
                 Next
                 <ArrowRight className="h-4 w-4 ml-2" />

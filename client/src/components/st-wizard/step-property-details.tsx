@@ -197,6 +197,63 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
   const [mapSearch, setMapSearch] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [recenterTo, setRecenterTo] = useState<{ lat: number; lng: number } | null>(null);
+  const [searchResults, setSearchResults] = useState<Array<{ display_name: string; lat: string; lon: string }>>([]);
+  const [showResults, setShowResults] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowResults(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const fetchSearchResults = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setSearchResults([]);
+      setShowResults(false);
+      return;
+    }
+    setSearchLoading(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5`
+      );
+      const data = await res.json();
+      setSearchResults(data);
+      setShowResults(data.length > 0);
+    } catch {
+      setSearchResults([]);
+      setShowResults(false);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, []);
+
+  const handleMapSearchChange = (value: string) => {
+    setMapSearch(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSearchResults(value), 300);
+  };
+
+  const handleSelectResult = (result: { display_name: string; lat: string; lon: string }) => {
+    const lat = parseFloat(result.lat);
+    const lng = parseFloat(result.lon);
+    const latStr = lat.toFixed(6);
+    const lngStr = lng.toFixed(6);
+    setLatitude(latStr);
+    setLongitude(lngStr);
+    onUpdate({ latitude: latStr, longitude: lngStr });
+    setRecenterTo({ lat, lng });
+    setMapSearch(result.display_name);
+    setShowResults(false);
+    setSearchResults([]);
+  };
 
   const handleLocationSearch = async () => {
     const q = mapSearch.trim();
@@ -204,18 +261,14 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
     setSearchLoading(true);
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=5`
       );
       const data = await res.json();
-      if (data.length > 0) {
-        const lat = parseFloat(data[0].lat);
-        const lng = parseFloat(data[0].lon);
-        const latStr = lat.toFixed(6);
-        const lngStr = lng.toFixed(6);
-        setLatitude(latStr);
-        setLongitude(lngStr);
-        onUpdate({ latitude: latStr, longitude: lngStr });
-        setRecenterTo({ lat, lng });
+      if (data.length === 1) {
+        handleSelectResult(data[0]);
+      } else if (data.length > 1) {
+        setSearchResults(data);
+        setShowResults(true);
       }
     } catch {
       // Silently fail — user can still click the map
@@ -607,16 +660,31 @@ export default function StepPropertyDetails({ property, onUpdate }: StepProps) {
         {/* Property Location — Map */}
         <div className="mt-4 space-y-3">
           <Label>Property Location</Label>
-          <div className="flex gap-2">
+          <div className="flex gap-2" ref={searchRef}>
             <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 value={mapSearch}
-                onChange={(e) => setMapSearch(e.target.value)}
+                onChange={(e) => handleMapSearchChange(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleLocationSearch()}
+                onFocus={() => searchResults.length > 0 && setShowResults(true)}
                 placeholder="Search for an address or area..."
                 className="pl-10"
               />
+              {showResults && searchResults.length > 0 && (
+                <div className="absolute z-[1000] top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-[200px] overflow-y-auto">
+                  {searchResults.map((result, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground truncate"
+                      onClick={() => handleSelectResult(result)}
+                    >
+                      {result.display_name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <Button
               type="button"

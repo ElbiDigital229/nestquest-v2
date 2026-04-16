@@ -754,10 +754,12 @@ router.get("/transactions", async (req: Request, res: Response) => {
       SELECT i.id, i.amount, i.invoice_status AS "status", i.paid_at AS "paidAt",
              i.created_at AS "createdAt",
              u.full_name AS "userName", u.email AS "userEmail", u.role AS "userRole",
-             p.name AS "planName", u.id AS "guestId"
+             p.name AS "planName", u.id AS "guestId",
+             s.status AS "subscriptionStatus"
       FROM invoices i
       JOIN users u ON u.id = i.user_id
       JOIN plans p ON p.id = i.plan_id
+      LEFT JOIN subscriptions s ON s.id = i.subscription_id
       ${whereSQL}
       ORDER BY i.created_at DESC
       LIMIT ${lim} OFFSET ${offset}

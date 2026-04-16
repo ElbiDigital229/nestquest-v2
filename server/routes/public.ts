@@ -152,7 +152,7 @@ router.get("/properties", async (req: Request, res: Response) => {
         p.bedrooms, p.bathrooms, p.max_guests AS "maxGuests",
         p.nightly_rate AS "nightlyRate", p.weekend_rate AS "weekendRate",
         p.cleaning_fee AS "cleaningFee",
-        p.minimum_stay AS "minimumStay",
+        p.minimum_stay AS "minimumStay", p.maximum_stay AS "maximumStay",
         p.city, p.latitude, p.longitude,
         a.name AS "areaName",
         (SELECT url FROM st_property_photos WHERE property_id = p.id AND is_cover = true LIMIT 1) AS "coverPhoto",
@@ -204,9 +204,9 @@ router.get("/properties/:id/availability", async (req: Request, res: Response) =
       AND start_date <= ${endDate} AND end_date >= ${startDate}
       ORDER BY start_date ASC
     `);
-    const prop = await db.execute(sql`SELECT minimum_stay AS "minimumStay" FROM st_properties WHERE id = ${id}`);
+    const prop = await db.execute(sql`SELECT minimum_stay AS "minimumStay", maximum_stay AS "maximumStay" FROM st_properties WHERE id = ${id}`);
 
-    return res.json({ booked: booked.rows, blocked: blocked.rows, minimumStay: prop.rows[0]?.minimumStay || 1 });
+    return res.json({ booked: booked.rows, blocked: blocked.rows, minimumStay: prop.rows[0]?.minimumStay || 1, maximumStay: prop.rows[0]?.maximumStay || 30 });
   } catch (error: any) {
     return res.status(500).json({ error: "Failed to fetch availability" });
   }
@@ -264,7 +264,7 @@ router.get("/properties/:id", async (req: Request, res: Response) => {
         p.access_type AS "accessType",
         p.short_description AS "shortDescription", p.long_description AS "longDescription",
         p.nightly_rate AS "nightlyRate", p.weekend_rate AS "weekendRate",
-        p.minimum_stay AS "minimumStay", p.cleaning_fee AS "cleaningFee",
+        p.minimum_stay AS "minimumStay", p.maximum_stay AS "maximumStay", p.cleaning_fee AS "cleaningFee",
         p.security_deposit_required AS "securityDepositRequired",
         p.security_deposit_amount AS "securityDepositAmount",
         p.accepted_payment_methods AS "acceptedPaymentMethods",

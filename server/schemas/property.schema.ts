@@ -11,6 +11,7 @@ export const createPropertySchema = z.object({
   securityDepositRequired: z.boolean().optional(),
   securityDepositAmount: z.number().min(0).optional(),
   minimumStay: z.number().int().min(1).optional(),
+  maximumStay: z.number().int().min(1).optional(),
   city: z.enum(["dubai", "abu_dhabi", "sharjah", "ajman", "ras_al_khaimah", "fujairah", "umm_al_quwain"]).optional(),
   cancellationPolicy: z.enum(["flexible", "moderate", "strict", "non_refundable"]).optional(),
 });

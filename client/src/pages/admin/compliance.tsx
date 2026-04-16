@@ -68,9 +68,11 @@ interface FlattenedDoc {
   email: string;
   role: string;
   docTypeLabel: string;
+  docTypeSlug: string;
   expiryDate: string | null;
   daysLeft: number | null;
   fileUrl: string | null;
+  isMissing?: boolean;
 }
 
 /* ── Helpers ───────────────────────────────────────────── */
@@ -244,21 +246,27 @@ function UrgencySection({
                 </div>
 
                 <div className="text-right shrink-0 min-w-[120px]">
-                  <p className="text-sm">{formatDate(item.expiryDate)}</p>
-                  {item.daysLeft !== null && (
-                    <p
-                      className={`text-xs font-medium ${
-                        item.daysLeft <= 0
-                          ? "text-red-600"
-                          : item.daysLeft <= 30
-                            ? "text-amber-600"
-                            : "text-yellow-600"
-                      }`}
-                    >
-                      {item.daysLeft <= 0
-                        ? `Expired ${Math.abs(item.daysLeft)}d ago`
-                        : `${item.daysLeft}d remaining`}
-                    </p>
+                  {item.isMissing ? (
+                    <p className="text-sm text-red-600 font-medium">Not uploaded</p>
+                  ) : (
+                    <>
+                      <p className="text-sm">{formatDate(item.expiryDate)}</p>
+                      {item.daysLeft !== null && (
+                        <p
+                          className={`text-xs font-medium ${
+                            item.daysLeft <= 0
+                              ? "text-red-600"
+                              : item.daysLeft <= 30
+                                ? "text-amber-600"
+                                : "text-yellow-600"
+                          }`}
+                        >
+                          {item.daysLeft <= 0
+                            ? `Expired ${Math.abs(item.daysLeft)}d ago`
+                            : `${item.daysLeft}d remaining`}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -277,33 +285,43 @@ function StatCard({
   value,
   icon: Icon,
   color,
+  onClick,
+  active,
 }: {
   label: string;
   value: number;
   icon: React.ElementType;
   color: "blue" | "red" | "amber";
+  onClick?: () => void;
+  active?: boolean;
 }) {
   const colors = {
     blue: {
       bg: "bg-blue-50",
       icon: "text-blue-600",
       value: "text-blue-700",
+      ring: "ring-blue-500",
     },
     red: {
       bg: "bg-red-50",
       icon: "text-red-600",
       value: "text-red-700",
+      ring: "ring-red-500",
     },
     amber: {
       bg: "bg-amber-50",
       icon: "text-amber-600",
       value: "text-amber-700",
+      ring: "ring-amber-500",
     },
   };
   const c = colors[color];
 
   return (
-    <Card>
+    <Card
+      className={`${onClick ? "cursor-pointer hover:shadow-md transition-shadow" : ""} ${active ? `ring-2 ${c.ring}` : ""}`}
+      onClick={onClick}
+    >
       <CardContent className="flex items-center gap-3 p-4">
         <div className={`rounded-lg p-2.5 ${c.bg}`}>
           <Icon className={`h-5 w-5 ${c.icon}`} />
@@ -416,11 +434,30 @@ export default function CompliancePage() {
     for (const row of rows) {
       for (const docType of documentTypes) {
         if (!isDocApplicable(docType, row.role)) continue;
-        if (!docType.hasExpiry) continue;
+        if (docTypeFilter !== "all" && docType.slug !== docTypeFilter) continue;
 
         const doc = row.documents.find((d) => d.documentTypeId === docType.id);
-        if (!doc || !doc.fileUrl) continue;
 
+        // Missing required document
+        if (!doc || !doc.fileUrl) {
+          if (isDocRequired(docType, row.role)) {
+            result.push({
+              guestId: row.guestId,
+              fullName: row.fullName,
+              email: row.email,
+              role: row.role,
+              docTypeLabel: docType.label,
+              docTypeSlug: docType.slug,
+              expiryDate: null,
+              daysLeft: null,
+              fileUrl: null,
+              isMissing: true,
+            });
+          }
+          continue;
+        }
+
+        if (!docType.hasExpiry) continue;
         const days = daysUntil(doc.expiryDate);
         if (days === null) continue;
         if (days > 90) continue;
@@ -431,6 +468,7 @@ export default function CompliancePage() {
           email: row.email,
           role: row.role,
           docTypeLabel: docType.label,
+          docTypeSlug: docType.slug,
           expiryDate: doc.expiryDate,
           daysLeft: days,
           fileUrl: doc.fileUrl,
@@ -440,26 +478,48 @@ export default function CompliancePage() {
 
     result.sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
     return result;
-  }, [rows, documentTypes]);
+  }, [rows, documentTypes, docTypeFilter]);
 
+  const missingDocs = useMemo(
+    () => flatDocs.filter((d) => d.isMissing),
+    [flatDocs]
+  );
   const expiredDocs = useMemo(
-    () => flatDocs.filter((d) => d.daysLeft !== null && d.daysLeft <= 0),
+    () => flatDocs.filter((d) => !d.isMissing && d.daysLeft !== null && d.daysLeft <= 0),
     [flatDocs]
   );
   const expiringDocs = useMemo(
     () =>
       flatDocs.filter(
-        (d) => d.daysLeft !== null && d.daysLeft >= 1 && d.daysLeft <= 30
+        (d) => !d.isMissing && d.daysLeft !== null && d.daysLeft >= 1 && d.daysLeft <= 30
       ),
     [flatDocs]
   );
   const expiring90Docs = useMemo(
     () =>
       flatDocs.filter(
-        (d) => d.daysLeft !== null && d.daysLeft >= 31 && d.daysLeft <= 90
+        (d) => !d.isMissing && d.daysLeft !== null && d.daysLeft >= 31 && d.daysLeft <= 90
       ),
     [flatDocs]
   );
+  const expiringCustomDocs = useMemo(
+    () =>
+      flatDocs.filter(
+        (d) => !d.isMissing && d.daysLeft !== null && d.daysLeft >= 1 && d.daysLeft <= customDays
+      ),
+    [flatDocs, customDays]
+  );
+
+  // Determine which sections to show based on filter
+  const showSection = (section: "missing" | "expired" | "30" | "90" | "custom"): boolean => {
+    if (expiryFilter === "all") return section !== "missing" && section !== "custom";
+    if (expiryFilter === "missing") return section === "missing";
+    if (expiryFilter === "expired") return section === "expired";
+    if (expiryFilter === "30") return section === "expired" || section === "30";
+    if (expiryFilter === "90") return section === "expired" || section === "30" || section === "90";
+    if (expiryFilter === "custom") return section === "custom";
+    return true;
+  };
 
   return (
     <div>
@@ -474,31 +534,39 @@ export default function CompliancePage() {
         </p>
       </div>
 
-      {/* Stats Bar */}
+      {/* Stats Bar — clickable to filter the urgency view */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatCard
           label="Total Users"
           value={stats.totalUsers}
           icon={Users}
           color="blue"
+          onClick={() => { setExpiryFilter("all"); setViewMode("urgency"); }}
+          active={expiryFilter === "all"}
         />
         <StatCard
           label="Missing Documents"
           value={stats.missing}
           icon={FileX}
           color="red"
+          onClick={() => { setExpiryFilter("missing"); setViewMode("urgency"); }}
+          active={expiryFilter === "missing"}
         />
         <StatCard
           label="Expiring Soon"
           value={stats.expiringSoon}
           icon={Clock}
           color="amber"
+          onClick={() => { setExpiryFilter("30"); setViewMode("urgency"); }}
+          active={expiryFilter === "30"}
         />
         <StatCard
           label="Expired"
           value={stats.expired}
           icon={AlertTriangle}
           color="red"
+          onClick={() => { setExpiryFilter("expired"); setViewMode("urgency"); }}
+          active={expiryFilter === "expired"}
         />
       </div>
 
@@ -583,6 +651,7 @@ export default function CompliancePage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All</SelectItem>
+                <SelectItem value="missing">Missing</SelectItem>
                 <SelectItem value="expired">Expired</SelectItem>
                 <SelectItem value="30">30 days</SelectItem>
                 <SelectItem value="60">60 days</SelectItem>
@@ -611,6 +680,15 @@ export default function CompliancePage() {
             <span className="text-xs text-muted-foreground font-medium mr-1">
               Quick filters:
             </span>
+            <Button
+              variant={expiryFilter === "missing" ? "default" : "outline"}
+              size="sm"
+              onClick={() =>
+                setExpiryFilter(expiryFilter === "missing" ? "all" : "missing")
+              }
+            >
+              Missing
+            </Button>
             <Button
               variant={expiryFilter === "expired" ? "default" : "outline"}
               size="sm"
@@ -662,30 +740,56 @@ export default function CompliancePage() {
           ) : viewMode === "urgency" ? (
             /* ── Urgency View ──────────────────────────────── */
             <div className="space-y-4">
-              <UrgencySection
-                title="Expired"
-                count={expiredDocs.length}
-                items={expiredDocs}
-                borderColor="border-l-red-500"
-                headerBg="bg-red-50"
-                onNavigate={(id) => navigate(`/admin/users/${id}`)}
-              />
-              <UrgencySection
-                title="Expiring Within 30 Days"
-                count={expiringDocs.length}
-                items={expiringDocs}
-                borderColor="border-l-amber-500"
-                headerBg="bg-amber-50"
-                onNavigate={(id) => navigate(`/admin/users/${id}`)}
-              />
-              <UrgencySection
-                title="Expiring Within 90 Days"
-                count={expiring90Docs.length}
-                items={expiring90Docs}
-                borderColor="border-l-yellow-500"
-                headerBg="bg-yellow-50"
-                onNavigate={(id) => navigate(`/admin/users/${id}`)}
-              />
+              {showSection("missing") && (
+                <UrgencySection
+                  title="Missing Required Documents"
+                  count={missingDocs.length}
+                  items={missingDocs}
+                  borderColor="border-l-red-500"
+                  headerBg="bg-red-50"
+                  onNavigate={(id) => navigate(`/admin/users/${id}`)}
+                />
+              )}
+              {showSection("expired") && (
+                <UrgencySection
+                  title="Expired"
+                  count={expiredDocs.length}
+                  items={expiredDocs}
+                  borderColor="border-l-red-500"
+                  headerBg="bg-red-50"
+                  onNavigate={(id) => navigate(`/admin/users/${id}`)}
+                />
+              )}
+              {showSection("30") && (
+                <UrgencySection
+                  title="Expiring Within 30 Days"
+                  count={expiringDocs.length}
+                  items={expiringDocs}
+                  borderColor="border-l-amber-500"
+                  headerBg="bg-amber-50"
+                  onNavigate={(id) => navigate(`/admin/users/${id}`)}
+                />
+              )}
+              {showSection("90") && (
+                <UrgencySection
+                  title="Expiring Within 90 Days"
+                  count={expiring90Docs.length}
+                  items={expiring90Docs}
+                  borderColor="border-l-yellow-500"
+                  headerBg="bg-yellow-50"
+                  onNavigate={(id) => navigate(`/admin/users/${id}`)}
+                />
+              )}
+              {showSection("custom") && (
+                <UrgencySection
+                  title={`Expiring Within ${customDays} Days`}
+                  count={expiringCustomDocs.length}
+                  items={expiringCustomDocs}
+                  borderColor="border-l-amber-500"
+                  headerBg="bg-amber-50"
+                  onNavigate={(id) => navigate(`/admin/users/${id}`)}
+                />
+              )}
             </div>
           ) : (
             /* ── User View (table) ─────────────────────────── */

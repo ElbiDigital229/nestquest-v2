@@ -65,7 +65,7 @@ export default function AdminLogin() {
                     if (!e.target.value) return;
                     setIsLoading(true);
                     try {
-                      await api.post("/auth/login", { email: "admin@nestquest.com", password: "Test1234!", role: "SUPER_ADMIN" });
+                      await api.post("/auth/login", { email: "admin@nestquest.com", password: "Password1!", role: "SUPER_ADMIN" });
                       await refreshUser();
                       toast({ title: "Welcome, Admin" });
                     } catch (err: any) {

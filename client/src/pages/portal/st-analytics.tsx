@@ -211,17 +211,32 @@ export default function StAnalytics() {
 
   // Fill in missing months for the chart (ensure 13 contiguous months)
   const filledMonthly = useMemo(() => {
-    if (!data?.monthly) return [];
-    const byMonth: Record<string, MonthlyRow> = {};
-    for (const r of data.monthly) byMonth[r.month] = r;
+    if (!data?.monthly || !Array.isArray(data.monthly)) return [];
     return data.monthly;
   }, [data?.monthly]);
 
+  // Safe sources and properties arrays
+  const safeSources = useMemo(() => {
+    if (!data?.sources || !Array.isArray(data.sources)) return [];
+    return data.sources;
+  }, [data?.sources]);
+
+  const safeProperties = useMemo(() => {
+    if (!data?.properties || !Array.isArray(data.properties)) return [];
+    return data.properties;
+  }, [data?.properties]);
+
   if (error) {
+    const errMsg = (error as any)?.message || "Unknown error";
+    const errDetails = (error as any)?.details;
     return (
       <div className="flex items-center justify-center py-20 text-muted-foreground flex-col gap-2">
+        <XCircle className="h-8 w-8 text-destructive/60" />
         <p className="font-medium text-destructive">Failed to load analytics</p>
-        <p className="text-xs text-muted-foreground">{(error as any)?.message || "Unknown error"}</p>
+        <p className="text-xs text-muted-foreground max-w-md text-center">{errDetails || errMsg}</p>
+        <Button variant="outline" size="sm" className="mt-2" onClick={() => window.location.reload()}>
+          Try Again
+        </Button>
       </div>
     );
   }

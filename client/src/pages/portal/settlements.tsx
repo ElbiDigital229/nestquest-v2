@@ -10,8 +10,9 @@ import { Input } from "@/components/ui/input";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  ArrowUpRight, ArrowDownLeft, CheckCircle, Loader2, Handshake, DollarSign,
+  ArrowUpRight, ArrowDownLeft, CheckCircle, Loader2, Handshake, DollarSign, Plus,
 } from "lucide-react";
 
 interface Settlement {
@@ -97,10 +98,33 @@ export default function SettlementsPage() {
   const [proofUrl, setProofUrl] = useState("");
   const [uploading, setUploading] = useState(false);
   const [tab, setTab] = useState<"all" | "owed" | "receivable" | "completed">("all");
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({ propertyId: "", amount: "", reason: "pm_commission", notes: "" });
 
   const { data, isLoading } = useQuery<SettlementsData>({
     queryKey: ["/st-properties/settlements"],
     queryFn: () => api.get("/st-properties/settlements"),
+  });
+
+  const isPo = user?.role === "PROPERTY_OWNER";
+
+  // For POs: fetch their properties to populate the create-settlement dropdown
+  const { data: poProperties = [] } = useQuery<any[]>({
+    queryKey: ["/st-properties/po/my-properties"],
+    queryFn: () => api.get("/st-properties/po/my-properties"),
+    enabled: isPo,
+  });
+
+  const createSettlementMutation = useMutation({
+    mutationFn: (body: { toUserId: string; propertyId: string; amount: string; reason: string; notes: string }) =>
+      api.post("/st-properties/settlements", body),
+    onSuccess: () => {
+      toast({ title: "Settlement created" });
+      queryClient.invalidateQueries({ queryKey: ["/st-properties/settlements"] });
+      setCreateDialogOpen(false);
+      setCreateForm({ propertyId: "", amount: "", reason: "pm_commission", notes: "" });
+    },
+    onError: (err: any) => toast({ title: err.message, variant: "destructive" }),
   });
 
   const payMutation = useMutation({
@@ -137,9 +161,17 @@ export default function SettlementsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2"><Handshake className="h-6 w-6" /> Settlements</h1>
-        <p className="text-muted-foreground mt-1">Track all payments between Property Manager and Property Owner</p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2"><Handshake className="h-6 w-6" /> Settlements</h1>
+          <p className="text-muted-foreground mt-1">Track all payments between Property Manager and Property Owner</p>
+        </div>
+        {isPo && poProperties.length > 0 && (
+          <Button onClick={() => setCreateDialogOpen(true)} size="sm">
+            <Plus className="h-4 w-4 mr-1.5" />
+            Pay Property Manager
+          </Button>
+        )}
       </div>
 
       {/* Summary */}
@@ -405,7 +437,9 @@ export default function SettlementsPage() {
               <Input value={payNotes} onChange={(e) => setPayNotes(e.target.value)} placeholder="e.g. Bank transfer ref #12345" />
             </div>
             <div className="space-y-1.5">
-              <label className="text-sm font-medium">Payment Proof (optional)</label>
+              <label className="text-sm font-medium">
+                Payment Proof <span className="text-destructive">*</span>
+              </label>
               <div className="flex items-center gap-3">
                 <input type="file" accept="image/*,.pdf" className="text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-primary file:text-primary-foreground file:cursor-pointer"
                   onChange={async (e) => {
@@ -415,13 +449,99 @@ export default function SettlementsPage() {
                   }} />
                 {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
               </div>
+              {!proofUrl && !uploading && (
+                <p className="text-xs text-muted-foreground">Upload a receipt, bank transfer screenshot, or other proof of payment</p>
+              )}
               {proofUrl && <img src={proofUrl} alt="Proof" className="mt-2 max-h-32 rounded-md border" />}
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPayDialog(null)}>Cancel</Button>
-            <Button disabled={payMutation.isPending} onClick={() => payDialog && payMutation.mutate(payDialog.id)}>
+            <Button disabled={payMutation.isPending || !proofUrl || uploading} onClick={() => payDialog && payMutation.mutate(payDialog.id)}>
               {payMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Confirm Payment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Settlement Dialog (PO → PM) */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>Pay Property Manager</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Create a payment record to settle an amount with your Property Manager (e.g. monthly fixed fee, expense reimbursement).
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Property <span className="text-destructive">*</span></label>
+              <Select value={createForm.propertyId} onValueChange={(v) => setCreateForm((f) => ({ ...f, propertyId: v }))}>
+                <SelectTrigger><SelectValue placeholder="Select property" /></SelectTrigger>
+                <SelectContent>
+                  {poProperties.map((p: any) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name || p.publicName || "Property"} {p.unitNumber ? `(Unit ${p.unitNumber})` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Reason <span className="text-destructive">*</span></label>
+              <Select value={createForm.reason} onValueChange={(v) => setCreateForm((f) => ({ ...f, reason: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="pm_commission">Management Fee / Commission</SelectItem>
+                  <SelectItem value="expense_reimbursement">Expense Reimbursement</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Amount (AED) <span className="text-destructive">*</span></label>
+              <Input
+                type="number"
+                value={createForm.amount}
+                onChange={(e) => setCreateForm((f) => ({ ...f, amount: e.target.value }))}
+                placeholder="e.g. 1000"
+                min="0"
+                step="0.01"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">Notes (optional)</label>
+              <Input
+                value={createForm.notes}
+                onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))}
+                placeholder="e.g. April 2026 management fee"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={
+                createSettlementMutation.isPending ||
+                !createForm.propertyId ||
+                !createForm.amount ||
+                parseFloat(createForm.amount) <= 0
+              }
+              onClick={() => {
+                const prop = poProperties.find((p: any) => p.id === createForm.propertyId);
+                const pmId = prop?.pmUserId;
+                if (!pmId) {
+                  toast({ title: "Property Manager not found for this property", variant: "destructive" });
+                  return;
+                }
+                createSettlementMutation.mutate({
+                  toUserId: pmId,
+                  propertyId: createForm.propertyId,
+                  amount: createForm.amount,
+                  reason: createForm.reason,
+                  notes: createForm.notes,
+                });
+              }}
+            >
+              {createSettlementMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Create Settlement
             </Button>
           </DialogFooter>
         </DialogContent>

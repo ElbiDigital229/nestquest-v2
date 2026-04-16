@@ -10,11 +10,11 @@ import { createNotification } from "../utils/notify";
 const router = Router();
 router.use(requireAuth);
 
-// Block non-PM/team/cleaner roles
+// Block non-PM/team/cleaner/admin roles
 router.use((req, res, next) => {
   const role = req.session.userRole;
-  if (!role || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "CLEANER"].includes(role)) {
-    return res.status(403).json({ error: "Access denied" });
+  if (!role || !["PROPERTY_MANAGER", "PM_TEAM_MEMBER", "CLEANER", "SUPER_ADMIN"].includes(role)) {
+    return res.status(403).json({ error: `Access denied — cleaner routes require PM, team member, cleaner, or admin role (got: ${role || "no session"})` });
   }
   next();
 });

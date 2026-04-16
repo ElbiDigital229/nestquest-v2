@@ -410,17 +410,22 @@ export default function GuestMessages() {
               ) : (
                 <div className="space-y-3">
                   {msgs.map((msg) => {
-                    const isMe = msg.senderId === user?.id;
+                    const isMe = msg.senderId === user?.id || msg.senderId === profileData?.user?.id;
                     return (
                       <div
                         key={msg.id}
                         className={cn("flex gap-2", isMe ? "flex-row-reverse" : "flex-row")}
                       >
-                        <Avatar className="h-7 w-7 shrink-0 mt-1">
-                          <AvatarFallback className={cn("text-xs", isMe ? "bg-primary/10 text-primary" : isDm ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive")}>
-                            {isMe ? getInitials(myName) : isDm ? getInitials(selectedConvo.name) : "SA"}
-                          </AvatarFallback>
-                        </Avatar>
+                        {!isMe && (
+                          <Avatar className="h-7 w-7 shrink-0 mt-1">
+                            <AvatarFallback className={cn(
+                              "text-xs",
+                              isDm ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive"
+                            )}>
+                              {isDm ? getInitials(selectedConvo.name) : "SA"}
+                            </AvatarFallback>
+                          </Avatar>
+                        )}
                         <div className={cn("max-w-[70%] flex flex-col gap-1", isMe ? "items-end" : "items-start")}>
                           <div
                             className={cn(
