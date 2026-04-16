@@ -233,7 +233,7 @@ export default function StProperties() {
             return (
               <Card key={property.id} className="overflow-hidden flex flex-col">
                 {/* Cover photo */}
-                <div className="h-40 bg-muted relative">
+                <div className="h-40 bg-muted relative overflow-hidden">
                   {property.coverPhotoUrl ? (
                     <img
                       src={property.coverPhotoUrl}
@@ -245,10 +245,10 @@ export default function StProperties() {
                       <Home className="h-10 w-10 text-muted-foreground/40" />
                     </div>
                   )}
-                  <PropertyStatusBadge status={property.status} className="absolute top-2 right-2" />
                 </div>
 
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 pt-4 space-y-2">
+                  <PropertyStatusBadge status={property.status} className="self-start" />
                   <h3 className="font-semibold text-lg truncate">
                     {property.publicName || "Untitled Property"}
                   </h3>
