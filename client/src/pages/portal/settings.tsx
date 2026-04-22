@@ -406,7 +406,8 @@ function FullSettings() {
     queryKey: ["/subscriptions/invoices"],
     queryFn: async () => {
       const res = await api.get("/subscriptions/invoices");
-      return res.invoices ?? res;
+      const list = res?.invoices ?? res;
+      return Array.isArray(list) ? list : [];
     },
     enabled: isPM,
   });

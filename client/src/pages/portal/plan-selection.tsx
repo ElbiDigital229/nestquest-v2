@@ -131,7 +131,11 @@ export default function PlanSelection() {
   });
 
   const currentPlanId = currentSub?.plan_id;
-  const invoices = invoiceData?.invoices || [];
+  const invoices = Array.isArray(invoiceData?.invoices)
+    ? invoiceData.invoices
+    : Array.isArray(invoiceData)
+      ? invoiceData
+      : [];
 
   if (isLoading) {
     return (
