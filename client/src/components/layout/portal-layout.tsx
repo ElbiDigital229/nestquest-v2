@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -108,6 +110,16 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stSectionOpen, setStSectionOpen] = useState(true);
 
+  // Pending PM-link requests for PROPERTY_OWNER / TENANT — drives sidebar badge
+  const showsLinkBadge = user?.role === "PROPERTY_OWNER" || user?.role === "TENANT";
+  const { data: linkItems = [] } = useQuery<Array<{ status: string }>>({
+    queryKey: ["/links", "sidebar-pending"],
+    queryFn: () => api.get("/links"),
+    enabled: showsLinkBadge,
+    refetchInterval: 60_000,
+  });
+  const pendingLinkCount = linkItems.filter((l) => l.status === "pending").length;
+
   // For team members, filter nav items and ST sub-items by their permissions
   const visibleRoleNavItems = (roleNavItems[user?.role ?? ""] ?? []).filter(
     item => !isTeamMember || !item.permission || hasPermission(item.permission)
@@ -180,6 +192,10 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
           <nav className="px-2 space-y-1">
             {[...getBaseNavItems(user?.role || ""), ...visibleRoleNavItems].map((item) => {
               const isActive = location === item.href;
+              const showBadge =
+                showsLinkBadge &&
+                item.href === "/portal/property-managers" &&
+                pendingLinkCount > 0;
               return (
                 <Link key={item.href} href={item.href}>
                   <div
@@ -192,7 +208,12 @@ export default function PortalLayout({ children, fullWidth }: { children: React.
                     onClick={() => setSidebarOpen(false)}
                   >
                     <item.icon className="h-4 w-4 shrink-0" />
-                    {item.label}
+                    <span className="flex-1">{item.label}</span>
+                    {showBadge && (
+                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-[11px] font-semibold">
+                        {pendingLinkCount > 99 ? "99+" : pendingLinkCount}
+                      </span>
+                    )}
                   </div>
                 </Link>
               );

@@ -301,7 +301,9 @@ function DescriptionTab({ property }: { property: PropertyData }) {
 // ─── Photos Tab ──────────────────────────────────────────
 
 function PhotosTab({ property }: { property: PropertyData }) {
-  const photos = property.photos || [];
+  const photos = (property.photos || [])
+    .slice()
+    .sort((a: any, b: any) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
   return (
     <div className="max-w-4xl mx-auto p-6">
       <div className="flex items-center gap-2 mb-1">
@@ -314,10 +316,24 @@ function PhotosTab({ property }: { property: PropertyData }) {
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {photos.map((photo: any) => (
-            <div key={photo.id} className="relative rounded-lg overflow-hidden border">
-              <img src={photo.url} alt={photo.caption || ""} className="w-full h-40 object-cover" />
+            <div
+              key={photo.id}
+              className="relative w-full rounded-lg overflow-hidden border bg-muted"
+              style={{ aspectRatio: "4 / 3" }}
+            >
+              <img
+                src={photo.url}
+                alt={photo.caption || ""}
+                className="absolute inset-0 w-full h-full object-cover"
+                loading="lazy"
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).style.display = "none";
+                }}
+              />
               {photo.isCover && (
-                <Badge className="absolute top-2 left-2 bg-primary text-primary-foreground text-[10px]">Cover</Badge>
+                <Badge className="absolute top-2 left-2 bg-primary text-primary-foreground text-[10px] shadow-sm z-10">
+                  Cover
+                </Badge>
               )}
             </div>
           ))}
