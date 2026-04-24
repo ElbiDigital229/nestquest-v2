@@ -31,6 +31,12 @@ const router = Router();
 const __filename2 = fileURLToPath(import.meta.url);
 const __dirname2 = path.dirname(__filename2);
 
+// Local-disk upload directory. Overridable via UPLOADS_DIR so production can
+// mount a persistent volume (e.g. /data/uploads) instead of the ephemeral
+// /app/uploads inside the container.
+const LOCAL_UPLOADS_DIR =
+  process.env.UPLOADS_DIR || path.join(__dirname2, "../uploads");
+
 const ALLOWED_MIME_TYPES = [
   "image/png",
   "image/jpeg",
@@ -74,7 +80,7 @@ const s3 = s3Enabled
 const storage = s3Enabled
   ? multer.memoryStorage()
   : multer.diskStorage({
-      destination: path.join(__dirname2, "../uploads"),
+      destination: LOCAL_UPLOADS_DIR,
       filename: (_req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         cb(null, `${crypto.randomUUID()}${ext}`);

@@ -227,7 +227,8 @@ async function startServer(): Promise<void> {
   });
 
   // ── Static uploads (local disk fallback when S3 not configured) ───────────
-  const uploadsPath = path.join(__dirname2, "uploads");
+  // Overridable via UPLOADS_DIR so production can point at a persistent volume.
+  const uploadsPath = process.env.UPLOADS_DIR || path.join(__dirname2, "uploads");
   app.use("/uploads", express.static(uploadsPath));
 
   // ── Billing Guard ──────────────────────────────────────
