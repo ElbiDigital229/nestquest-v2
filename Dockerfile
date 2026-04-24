@@ -30,8 +30,11 @@ COPY --from=builder /app/migrations ./migrations
 COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 
-# Uploads directory (overridden by volume in production)
+# Uploads directory — declared as a volume so container rebuilds don't wipe
+# user-uploaded files. Mount a persistent volume here in production (or set
+# UPLOADS_DIR to a mounted path such as /data/uploads).
 RUN mkdir -p uploads
+VOLUME ["/app/uploads"]
 
 EXPOSE 3000
 
