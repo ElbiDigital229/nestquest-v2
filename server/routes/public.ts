@@ -31,7 +31,9 @@ router.get("/areas", async (_req: Request, res: Response) => {
       SELECT a.id, a.name, a.city, a.latitude, a.longitude,
         COUNT(p.id)::int AS "propertyCount"
       FROM areas a
-      LEFT JOIN st_properties p ON p.area_id = a.id AND p.status = 'active'
+      LEFT JOIN st_properties p ON p.area_id = a.id
+        AND p.status = 'active'
+        AND EXISTS (SELECT 1 FROM users u WHERE u.id = p.pm_user_id AND u.status = 'active')
       GROUP BY a.id
       ORDER BY a.name ASC
     `);
@@ -58,6 +60,7 @@ router.get("/featured", async (_req: Request, res: Response) => {
         COALESCE((SELECT COUNT(*)::int FROM st_reviews r WHERE r.property_id = p.id), 0) AS "reviewCount"
       FROM st_properties p
       LEFT JOIN areas a ON a.id = p.area_id
+      JOIN users pm ON pm.id = p.pm_user_id AND pm.status = 'active'
       WHERE p.status = 'active'
       ORDER BY p.created_at DESC
       LIMIT 12
@@ -80,7 +83,10 @@ router.get("/properties", async (req: Request, res: Response) => {
     } = req.query as Record<string, string>;
     const amenities = req.query.amenities as string[] | string | undefined;
 
-    const conditions: string[] = ["p.status = 'active'"];
+    const conditions: string[] = [
+      "p.status = 'active'",
+      "EXISTS (SELECT 1 FROM users u WHERE u.id = p.pm_user_id AND u.status = 'active')",
+    ];
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
@@ -274,7 +280,7 @@ router.get("/properties/:id", async (req: Request, res: Response) => {
         pm_guest.full_name AS "pmName"
       FROM st_properties p
       LEFT JOIN areas a ON a.id = p.area_id
-      LEFT JOIN users pm_guest ON pm_guest.id = p.pm_user_id
+      JOIN users pm_guest ON pm_guest.id = p.pm_user_id AND pm_guest.status = 'active'
       WHERE p.id = ${id} AND p.status = 'active'
     `);
 
