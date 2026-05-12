@@ -11,7 +11,9 @@ const router = Router();
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === "production" ? 5 : 100,
+  // Raised from 5 because the demo Quick-Login dropdown lets one user
+  // switch between 8 demo accounts in a single session.
+  max: process.env.NODE_ENV === "production" ? 50 : 100,
   message: { error: "Too many login attempts. Please try again in 15 minutes." },
   standardHeaders: true,
   legacyHeaders: false,
