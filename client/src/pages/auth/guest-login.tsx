@@ -184,42 +184,46 @@ export default function GuestLogin({ roleSlug }: { roleSlug: string }) {
         </CardHeader>
 
         <CardContent className="space-y-6">
-          {/* ── Dev Quick Login ──────────────────────── */}
-          {import.meta.env.DEV && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-              <p className="text-xs font-semibold text-amber-800 mb-2">Quick Login (Dev Only)</p>
-              <select
-                className="w-full h-9 rounded-md border border-amber-300 bg-white px-3 text-sm"
-                defaultValue=""
-                onChange={async (e) => {
-                  const val = e.target.value;
-                  if (!val) return;
-                  const [qEmail, qPassword, qRole] = val.split("|");
-                  setIsLoading(true);
-                  try {
-                    const loginRes = await api.post<{ user: { role: string } }>("/auth/login", { email: qEmail, password: qPassword, role: qRole });
-                    await refreshUser();
-                    toast({ title: `Logged in as ${qEmail}` });
-                    const defaultPath = loginRes.user?.role === "CLEANER" ? "/portal/cleaner-tasks" : "/portal/settings";
-                    navigate(returnTo || defaultPath);
-                  } catch (err: any) {
-                    toast({ title: err.message || "Login failed", variant: "destructive" });
-                  } finally {
-                    setIsLoading(false);
-                  }
-                }}
-              >
-                <option value="">Select a test account...</option>
-                <option value="pm@nestquest.com|Test1234!|PROPERTY_MANAGER">PM — Ahmed Al Maktoum</option>
-                <option value="sarah@nestquest.com|Test1234!|PROPERTY_MANAGER">PM — Sarah Al Rashidi</option>
-                <option value="owner@nestquest.com|Test1234!|PROPERTY_OWNER">PO — Fatima Al Nahyan</option>
-                <option value="guest@nestquest.com|Test1234!|GUEST">Guest — James Wilson</option>
-                <option value="maria@guest.com|Test1234!|GUEST">Guest — Maria Santos</option>
-                <option value="lena@guest.com|Test1234!|GUEST">Guest — Lena Hoffmann</option>
-                <option value="cleaner@nestquest.com|Test1234!|CLEANER">Cleaner — Ravi Kumar</option>
-              </select>
-            </div>
-          )}
+          {/* ── Quick Login (demo) ───────────────────── */}
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <p className="text-xs font-semibold text-amber-800 mb-2">Quick Login (Demo)</p>
+            <select
+              className="w-full h-9 rounded-md border border-amber-300 bg-white px-3 text-sm"
+              defaultValue=""
+              onChange={async (e) => {
+                const val = e.target.value;
+                if (!val) return;
+                const [qEmail, qPassword, qRole] = val.split("|");
+                setIsLoading(true);
+                try {
+                  const loginRes = await api.post<{ user: { role: string } }>("/auth/login", { email: qEmail, password: qPassword, role: qRole });
+                  await refreshUser();
+                  toast({ title: `Logged in as ${qEmail}` });
+                  const r = loginRes.user?.role;
+                  const defaultPath =
+                    r === "SUPER_ADMIN" ? "/admin/users"
+                    : r === "CLEANER" ? "/portal/cleaner-tasks"
+                    : "/portal/settings";
+                  navigate(returnTo || defaultPath);
+                } catch (err: any) {
+                  toast({ title: err.message || "Login failed", variant: "destructive" });
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+            >
+              <option value="">Select a demo account...</option>
+              <option value="admin@nestquest.com|Password1!|SUPER_ADMIN">Admin — admin@nestquest.com</option>
+              <option value="pm@nestquest.com|Password1!|PROPERTY_MANAGER">PM — Ahmed Al Maktoum</option>
+              <option value="sarah@nestquest.com|Password1!|PROPERTY_MANAGER">PM — Sarah Al Rashidi</option>
+              <option value="owner@nestquest.com|Password1!|PROPERTY_OWNER">PO — Fatima Al Nahyan</option>
+              <option value="guest@nestquest.com|Password1!|GUEST">Guest — James Wilson</option>
+              <option value="maria@guest.com|Password1!|GUEST">Guest — Maria Santos</option>
+              <option value="lena@guest.com|Password1!|GUEST">Guest — Lena Hoffmann</option>
+              <option value="cleaner@nestquest.com|Password1!|CLEANER">Cleaner — Ravi Kumar</option>
+            </select>
+            <p className="text-[10px] text-amber-700 mt-1">Password for all demo accounts: <code className="font-mono">Password1!</code></p>
+          </div>
 
           {/* ── SSO Buttons ──────────────────────────── */}
           <div className="grid grid-cols-3 gap-3">
