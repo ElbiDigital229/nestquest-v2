@@ -136,16 +136,24 @@ if (isProduction && allowedOrigins.length === 0) {
 }
 
 app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      cb(new Error(`CORS: origin '${origin}' not allowed`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-request-id"],
-    exposedHeaders: ["x-request-id"],
+  cors((req, callback) => {
+    // Always trust same-origin requests (Origin === protocol+host the request
+    // arrived on). Avoids needing ALLOWED_ORIGINS to list the public hostname
+    // explicitly — that's redundant with the host the server is actually
+    // serving from, and easy to forget on bare-IP demo deployments.
+    const selfOrigin = `${req.protocol}://${req.headers.host}`;
+    callback(null, {
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        if (origin === selfOrigin) return cb(null, true);
+        if (allowedOrigins.includes(origin)) return cb(null, true);
+        cb(new Error(`CORS: origin '${origin}' not allowed`));
+      },
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "x-request-id"],
+      exposedHeaders: ["x-request-id"],
+    });
   })
 );
 
